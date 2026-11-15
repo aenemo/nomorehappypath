@@ -24,6 +24,12 @@ done
 if [[ -d "$source_root/docs/support" ]]; then
   mkdir -p "$out/docs" && cp -R "$source_root/docs/support" "$out/docs/"
 fi
+# The skill library (skills/) is read by the running app (harness/skill_library.py); without it a public
+# install has an empty library and the Go ahead card offers no guides (v0.24.0 and v0.24.1 shipped without it).
+# (Guarded like docs/support: tests run this script against small planted source trees that have no skills/.)
+if [[ -d "$source_root/skills" ]]; then
+  cp -R "$source_root/skills" "$out/"
+fi
 find "$out" \( -name __pycache__ -o -name .DS_Store -o -name "*.pyc" \) -prune -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$out/web/node_modules" 2>/dev/null || true
 
