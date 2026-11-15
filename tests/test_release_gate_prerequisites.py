@@ -158,5 +158,19 @@ class ReleaseGatePrerequisiteTests(unittest.TestCase):
         )
 
 
+    def test_the_assembled_tree_carries_the_skill_library(self):
+        """v0.24.0 and v0.24.1 shipped without skills/, so a public install had an empty library.
+        The assembled tree must hold every guide folder the app reads, before any later gate runs."""
+        if sys.platform == "darwin" and not Path("/bin/ps").exists():
+            self.skipTest("no /bin/ps to shim on this macOS host")
+        expected = sorted(folder.name for folder in (ROOT / "skills").iterdir() if (folder / "SKILL.md").is_file())
+        self.assertTrue(expected, "this checkout has no skill library to ship")
+        with tempfile.TemporaryDirectory() as parent:
+            out = Path(parent) / "release-tree"
+            self._run_with_process_table_denied(out)
+            shipped = sorted(folder.name for folder in (out / "skills").iterdir() if (folder / "SKILL.md").is_file()) \
+                if (out / "skills").is_dir() else []
+        self.assertEqual(shipped, expected, "the public tree must carry the whole skill library")
+
 if __name__ == "__main__":
     unittest.main()
