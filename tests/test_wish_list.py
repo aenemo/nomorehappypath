@@ -16,6 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from harness import board, board_viewer, project_manager_page
+from tests.environment_support import require_loopback
 from tests.mission_control_support import RenderedCase
 from tests.test_requirements_contract import context
 
@@ -209,6 +210,7 @@ class WishListPagePathTests(unittest.TestCase):
     """R1, R2, R3, R4, R6: the real HTTP routes a browser calls."""
 
     def setUp(self):
+        require_loopback()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
@@ -504,6 +506,7 @@ class WishListServedPageTests(unittest.TestCase):
     contract-check wording."""
 
     def setUp(self):
+        require_loopback()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)

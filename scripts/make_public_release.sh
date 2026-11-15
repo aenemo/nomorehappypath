@@ -30,6 +30,11 @@ fi
 if [[ -d "$source_root/skills" ]]; then
   cp -R "$source_root/skills" "$out/"
 fi
+# The community code of conduct (Contributor Covenant) ships with the other community documents.
+# (Guarded like skills/: tests run this script against small planted source trees that have no such file.)
+if [[ -f "$source_root/CODE_OF_CONDUCT.md" ]]; then
+  cp "$source_root/CODE_OF_CONDUCT.md" "$out/"
+fi
 find "$out" \( -name __pycache__ -o -name .DS_Store -o -name "*.pyc" \) -prune -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$out/web/node_modules" 2>/dev/null || true
 

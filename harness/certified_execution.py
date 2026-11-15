@@ -380,6 +380,11 @@ def _run_observed(
 _FAILURE_SIGNS = re.compile(r"FAILED|\bERROR\b|Traceback|\berrors=|\bfailures=|\b\w*Error\b|Exception")
 
 
+# What the operating system prints when it refuses a file or folder (the macOS sandbox says "Operation not permitted", the Linux
+# protected area's read-only mounts say "Read-only file system"): a machine limit, not a result about the work.
+_PROTECTED_AREA_DENIAL = re.compile(r"operation not permitted|read-only file system|\bEPERM\b|\bEACCES\b|\bEROFS\b", re.I)
+
+
 def _clean_run(output: str) -> bool:
     """True only when the output shows no sign of a failure: an empty suite that merely found nothing, never an error in setup or collection."""
     return not _FAILURE_SIGNS.search(output or "")
@@ -519,6 +524,13 @@ def run(
                 f"internal-QA test command timed out after {timeout_seconds} seconds; partial output was not certified",
                 output,
             ), output)
+        if (unable_not_failure and raw_exit != 0 and _PROTECTED_AREA_DENIAL.search(output) and not final_check_problem(output)
+                and not [p for p in process_audit["problems"] if not p.startswith("internal-QA test command timed out")]):
+            # 2026-11-15 (D-017, PropDesk Public): the board's protected area refused something the check needed (npm's own cache folder),
+            # so the check stopped before it could say anything about the work. A machine limit is "did not run", never a failure that
+            # cancels the review; the Reviewer still reviews the work.
+            seen = _PROTECTED_AREA_DENIAL.search(output).group(0)
+            raise CouldNotRun(f"the machine refused a file or folder the check needed ({seen}), so the check stopped before it had a result", output)
         if raw_exit == 127 and _nothing_said and _test_count(output) is None:
             # the program the check calls is not installed in this copy (exit 127: command not found): not a failure of the work
             raise CouldNotRun("the check's command was not found in this copy (exit 127: command not found)", output)
