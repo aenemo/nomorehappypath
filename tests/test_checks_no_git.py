@@ -57,12 +57,14 @@ class RefusedSkipNamesTheRepairTests(unittest.TestCase):
         from harness import board
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            cto = board.register(root, "cto", "GLOBAL_MONITOR", vendor="Anthropic")   # the CTO may skip on any task; the refusal is the same
+            # Delivery is refused and told the repair; since 2026-11-15 the CTO may set aside a check that failed only because of the machine
+            delivery = board.register(root, "development", board.AWAITING_OWNER_DIRECTION, vendor="Anthropic")
             with board.locked_state(root) as state:
+                state["agents"][delivery["id"]]["task"] = "TASK-SKIP"
                 state.setdefault("requirement_confirmations", {})["TASK-SKIP"] = {
                     "text": "agreed", "contract_check": {"checks": [{"criterion_index": 1, "position": 1}], "results": {"1": "failed"}}}
             with self.assertRaisesRegex(ValueError, "file check-deviation .*the Reviewer answers once"):
-                board.record_contract_check_skip(root, cto["id"], "TASK-SKIP", 1, "git show cannot run in the reviewer checkout")
+                board.record_contract_check_skip(root, delivery["id"], "TASK-SKIP", 1, "git show cannot run in the reviewer checkout")
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from harness import board
+from harness import board, control
 from tests import test_contract_first_checks as base
 from tests.test_contract_first_checks import TASK, TEST_FILE, TEXT, ledger, submission, write_json
 
@@ -141,6 +142,73 @@ class ZeroTestsRunTests(unittest.TestCase):
         self.assertEqual(block["skipped"][0]["reason"], "the check finds no tests; the work has its own 14 tests")
         self.assertEqual({item["label"] for item in block["labels"]}, {"not checked in advance"})
         self.assertEqual(block["labels"][0]["note"], "the check finds no tests; the work has its own 14 tests")
+
+    # 2026-11-15 PropDesk Public: npm refused its own cache folder inside the board's protected area; the check was counted as a
+    # failure and the review was cancelled four times. A machine limit is "did not run" (D-017).
+    EPERM_HELLO = ("print(\"npm error code EPERM\\nnpm error Error: EPERM: operation not permitted, open '/Users/x/.npm/_cacache'\")\n"
+                   "raise SystemExit(1)\n")
+
+    def test_a_check_stopped_by_the_protected_area_did_not_run_and_does_not_cancel_the_review(self):
+        self.confirmed_with(ledger())
+        _repo, commit = self.committed_repo("hello", {"hello.py": self.EPERM_HELLO})
+        run = self.run_checks(commit)                                     # on main this raised "the Reviewer's check 1 ... failed"
+        self.assertEqual(run["run"]["status"], "partly")
+        self.assertIn("machine refused a file or folder", run["run"]["did_not_run"]["1"])
+        self.assertEqual(self.results()["results"], {"1": "did_not_run"})
+
+    def test_a_read_only_folder_on_linux_is_the_same_machine_limit(self):
+        self.confirmed_with(ledger())
+        body = "print(\"OSError: [Errno 30] Read-only file system: '/home/u/.npm'\")\nraise SystemExit(1)\n"
+        _repo, commit = self.committed_repo("hello", {"hello.py": body})
+        self.assertEqual(self.run_checks(commit)["run"]["status"], "partly")
+        self.assertEqual(self.results()["results"], {"1": "did_not_run"})
+
+    def test_a_check_the_machine_could_not_start_did_not_run(self):
+        self.confirmed_with(ledger())
+        _repo, commit = self.committed_repo("hello")
+        with mock.patch.object(board, "_execute_scenario_simulations", side_effect=OSError("[Errno 35] Resource temporarily unavailable")):
+            run = self.run_checks(commit)                                 # on main the OSError cancelled the review
+        self.assertEqual(run["run"]["status"], "partly")
+        self.assertIn("could not start this check", run["run"]["did_not_run"]["1"])
+        self.assertEqual(self.results()["results"], {"1": "did_not_run"})
+
+    def test_a_skipped_check_closes_the_blocked_review_and_counts_as_the_ctos_action(self):
+        self.assertIn("contract_check_skipped", board.REVIEW_BLOCK_CLOSERS)
+        self.assertIn("contract_check_skipped", board.CTO_ROUTING_EVENTS)
+        state = {"review_blocks": {TASK: {"task": TASK, "since": "2026-11-15T20:00:00+00:00", "actioned_at": "", "count": 4, "actions": 0}}}
+        board._track_review_block(state, {"kind": "contract_check_skipped", "task": TASK, "at": "2026-11-15T20:37:00+00:00"}, None)
+        self.assertEqual(state["review_blocks"], {})
+
+    def test_the_boards_messages_tell_the_cto_it_can_set_aside_a_check_the_machine_failed(self):
+        # 2026-11-15 22:18 PropDesk Public: the resumed CTO had the new rule, but the board's "review blocked" message still said only
+        # "route the correction to the Reviewer"; it followed the board, the Reviewer was idle, and the owner got a red card.
+        refusal = board._waiting_refusal([{"kind": "review_blocked", "task": TASK, "at": "2026-11-15T20:00:00+00:00", "actions": 0}])
+        self.assertIn("contract-check-skip", refusal)
+        self.assertIn("failed only because of the machine", refusal)
+        self.confirmed_with(ledger())
+        _repo, commit = self.committed_repo("goodbye")
+        with self.assertRaisesRegex(ValueError, "failed only because of the machine.*the CTO sets it aside itself with contract-check-skip"):
+            self.run_checks(commit)
+        source = Path(board.__file__).read_text(encoding="utf-8")
+        self.assertIn("and the CTO can also \"\n                             \"set aside one that failed only because of the machine", source)
+
+    def test_the_cto_can_set_aside_a_failed_check_and_delivery_cannot(self):
+        agent, _reviewer = self.confirmed_with(ledger())
+        _repo, commit = self.committed_repo("goodbye")                    # a real failure: still a failure
+        with self.assertRaisesRegex(ValueError, "failed"):
+            self.run_checks(commit)
+        self.assertEqual(self.results()["results"], {"1": "failed"})
+        with self.assertRaisesRegex(ValueError, "did not run"):
+            board.record_contract_check_skip(self.root, agent["id"], TASK, 1, "I would like to skip my failing check")
+        session = control.create(self.root, "claude_cto")
+        cto = board.register(self.root, "cto", "GLOBAL_MONITOR", vendor="Anthropic", session_id=session["id"])
+        before = self.results()["checks_sha256"]
+        board.record_contract_check_skip(self.root, cto["id"], TASK, 1, "npm was refused its cache folder by the board's protected area")
+        block = self.results()
+        self.assertEqual(block["checks"], [])
+        self.assertNotEqual(block["checks_sha256"], before)
+        self.assertEqual(block["skipped"][0]["role"], "cto")
+        self.assertNotIn("1", block.get("results") or {})
 
     def test_a_passing_check_cannot_be_skipped(self):
         agent, _reviewer = self.confirmed_with(ledger())

@@ -6228,8 +6228,8 @@ def _recheck_update(root: Path, state: dict[str, Any], qa: dict[str, Any], propo
 def record_contract_check_skip(root: Path, agent_id: str, task: str, criterion: Any, reason: str) -> dict[str, Any]:
     """Delivery or the CTO sets aside ONE stored check the board could not run, with a recorded reason (shown as not checked in advance).
 
-    Only a check whose last board run said "did not run" can be skipped, so a failing check cannot be waved away; the independent final
-    review is not touched and nothing else is waived.
+    Delivery can skip only a check whose last board run said "did not run", so it cannot wave away its own failing check; the CTO can also
+    set aside one that failed only because of the machine (2026-11-15). The independent final review is not touched and nothing else is waived.
     """
     reason = " ".join(str(reason or "").split())
     if len(reason) < 8:
@@ -6245,8 +6245,12 @@ def record_contract_check_skip(root: Path, agent_id: str, task: str, criterion: 
         entries = [item for item in block.get("checks") or [] if item["criterion_index"] == number]
         if not entries:
             raise ValueError("that requirement has no stored check to skip")
-        if (block.get("results") or {}).get(str(number)) != "did_not_run":
-            raise ValueError("only a check the board reported as 'did not run' can be skipped; a check that ran and failed must be fixed or corrected: "
+        last = (block.get("results") or {}).get(str(number))
+        # 2026-11-15 (D-017, D-018): the CTO may also set aside a check that failed only because of the machine (a protected-area
+        # denial, a missing tool); it is an operation, not a verdict: the independent final review is unchanged.
+        if last != "did_not_run" and not (last == "failed" and agent.get("role") == "cto"):
+            raise ValueError("only a check the board reported as 'did not run' can be skipped (the CTO can also set aside one that failed only "
+                             "because of the machine); a check that ran and failed must be fixed or corrected: "
                              "if the check's assumption does not hold in reality, file check-deviation (what it assumes vs what is real, with evidence) "
                              "and the Reviewer answers once; otherwise repair the work and request the review again")
         if _task_closed_for_checks(state, str(task)):
@@ -6581,6 +6585,13 @@ def _run_contract_checks(root: Path, task: str, request: dict[str, Any], certifi
                         outcomes[item["criterion_index"]] = "passed"
                 except certified_execution.RetryableInterruption:
                     raise
+                except (OSError, RuntimeError) as unable:
+                    # 2026-11-15 (D-017): the machine could not start the check (a process that would not start, no protected area
+                    # available): nothing ran, so it says nothing about the work and never cancels the review.
+                    reasons[item["criterion_index"]] = (
+                        f"the machine could not start this check ({type(unable).__name__}: {' '.join(str(unable).split())[:160]}). This says "
+                        "nothing about the work. Delivery or the CTO can skip this check with a recorded reason (contract-check-skip).")
+                    outcomes[item["criterion_index"]] = "did_not_run"
                 except certified_execution.CouldNotRun as unable:
                     seen = " ".join(str(unable.output or "").split())[-200:]
                     reasons[item["criterion_index"]] = (
@@ -6600,7 +6611,8 @@ def _run_contract_checks(root: Path, task: str, request: dict[str, Any], certifi
                     _record_contract_check_results(root, task, outcomes)
                     raise ValueError(
                         f"the Reviewer's check {item['n']} for \"{item['criterion']}\" failed: {error}. If you believe the check contradicts the "
-                        "requirements rather than your work, post a blocked status naming that requirement; the CTO asks the Reviewer to correct it. Never edit the check."
+                        "requirements rather than your work, post a blocked status naming that requirement; the CTO asks the Reviewer to correct it. If it failed only "
+                        "because of the machine (a refused folder, a missing tool), the CTO sets it aside itself with contract-check-skip. Never edit the check."
                     ) from None
     _record_contract_check_results(root, task, outcomes, reasons)
     if role == "delivery":
@@ -7546,7 +7558,7 @@ CTO_ROUTING_EVENTS = (
     "finding_classified", "finding_triaged", "finding_routed_around", "finding_resolved", "finding_dispatched",
     "owner_action_recorded", "candidate_scope_reopened", "subtask_superseded", "control_plane_hold_recorded",
     "finalization_coverage_reevaluated", "final_review_repinned", "release_recorded", "visual_test_required",
-    "finding_reobserved", "reintegration_routed",
+    "finding_reobserved", "reintegration_routed", "contract_check_skipped",
 )
 # the task's own progress, or its end, settles the obligation without the CTO
 TASK_PROGRESS_EVENTS = (
@@ -7586,6 +7598,7 @@ REVIEW_BLOCK_EVENTS = ("agent_restart_requested", "agent_replacement_requested",
 REVIEW_BLOCK_CLOSERS = (
     "development_complete", "task_cancelled", "task_closed_administratively", "git_acceptance_completed",
     "visual_test_required", "release_recorded", "contract_check_corrected",
+    "contract_check_skipped",   # 2026-11-15: the blocking check was set aside with a reason; nothing waits on the Reviewer any more
 )
 
 
@@ -7827,7 +7840,9 @@ def _waiting_refusal(failures: list[dict[str, Any]]) -> str:
     if first.get("kind") == "review_blocked":
         return (
             f"the review of {first.get('task')} has been blocked since {when}{more} and no action has been taken: restart or replace the Reviewer "
-            "(Mission Control, or let the stall ladder do it), or route the correction of the blocking check to the Reviewer (only it may correct a stored check), then report. "
+            "(Mission Control, or let the stall ladder do it), or route the correction of the blocking check to the Reviewer (only it may correct a stored check), "
+            "or, when the check failed only because of the machine (a refused folder, a missing tool), set it aside yourself now with "
+            "`contract-check-skip --agent <your-id> --task <task> --criterion <n> --reason \"<the cause>\"` (2026-11-15: the CTO may set aside a failed check), then report. "
             + ("Two restarts did not clear it: raise one owner card (owner-action) naming the blocked review. " if int(first.get("actions") or 0) >= 2 else "")
             + "Waiting is not an action, and the owner is never the workaround."
         )
@@ -15664,7 +15679,8 @@ def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: 
                         "Delivery evidence did not run (" + str(error)[:200] + "); no test failed, ask for the review again"
                         if interrupted
                         else "Delivery evidence failed: " + str(error)[:500] + ". What to do: Delivery fixes what is named above and asks for the review again; "
-                             "a stored check that could not run (not a failed test) can be skipped with a recorded reason using contract-check-skip. "
+                             "a stored check that could not run (not a failed test) can be skipped with a recorded reason using contract-check-skip, and the CTO can also "
+                             "set aside one that failed only because of the machine. "
                              "Staged Reviewer execution and verdict remain blocked until then"),
                 })
                 failures = state.setdefault("delivery_attempt_failures", [])
