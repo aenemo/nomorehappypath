@@ -123,7 +123,11 @@ PAGE = r"""<!doctype html>
 .mc-cancel{margin-top:12px;min-height:40px}
 .mc-agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:18px}
 .mc-agent{background:#fff;border:1px solid var(--line);border-top:4px solid var(--mc-teal);border-radius:14px;padding:16px 18px;min-width:0}
-.mc-agent.mc-reviewer{border-top-color:var(--mc-coral)}.mc-agent.mc-cto{border-top-color:var(--mc-purple)}
+/* Issue #92: one colour per role (builder, reviewer, CTO), used wherever that agent appears: its name, its row and its screen. The owner picks it in Settings (applyRoleColors); these are the defaults. The -ink tone is for text and keeps 4.5:1 on white. */
+.mc-builder{--mc-role:var(--mc-builder-color,var(--mc-teal));--mc-role-ink:var(--mc-builder-ink,#0f766e)}.mc-reviewer{--mc-role:var(--mc-reviewer-color,var(--mc-coral));--mc-role-ink:var(--mc-reviewer-ink,#b8392a)}.mc-cto{--mc-role:var(--mc-cto-color,var(--mc-purple));--mc-role-ink:var(--mc-cto-ink,#5b4bc4)}
+.mc-agent[data-agent-role]{border-top-color:var(--mc-role)}.mc-agent[data-agent-role] .mc-agent-head strong{color:var(--mc-role-ink)}
+.agent-row[data-agent-role]{border-left:4px solid var(--mc-role);padding-left:12px}.agent-row[data-agent-role]>.row>div>strong{color:var(--mc-role-ink)}
+#agent-view-dialog[data-agent-role]{border-top:6px solid var(--mc-role)}#agent-view-dialog[data-agent-role] #agent-view-title{color:var(--mc-role-ink)}
 .mc-agent-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.mc-agent-head span{font-size:12px;color:var(--mc-muted)}
 .mc-doing{margin-top:8px;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
 .mc-agent small{display:block;margin-top:8px;color:var(--mc-muted);font-size:12.5px;overflow-wrap:anywhere}
@@ -1636,6 +1640,24 @@ async function submitRejection(event){
   return false;
 }
 
+// Issue #92: the colours the owner chose in Settings ({builder|reviewer|cto: {hex, ink}}, from the server's fixed list).
+function applyRoleColors(colors){
+  const style=typeof document!=='undefined'&&document.documentElement&&document.documentElement.style;
+  if(!style||!colors)return;
+  for(const role of ['builder','reviewer','cto']){const color=colors[role];if(!color)continue;style.setProperty(`--mc-${role}-color`,color.hex);style.setProperty(`--mc-${role}-ink`,color.ink);}
+}
+// Issue #92: the role whose colour an agent wears, as story._role_of_agent and story._role_of_kind decide it.
+function agentColorRole(agent,session){
+  if(agent){const role=String(agent.role||'');return role==='qa'?'reviewer':role==='cto'?'cto':'builder';}
+  const kind=String(session?.kind||'');
+  return !kind?'':kind.includes('reviewer')?'reviewer':kind.includes('cto')?'cto':'builder';
+}
+function paintAgentRole(node,role){
+  // className and dataset only, so the plain stand-in elements the unit tests use work too.
+  node.className=String(node.className||'').split(/\s+/).filter(name=>name&&!/^mc-(builder|reviewer|cto)$/.test(name)).concat(role?['mc-'+role]:[]).join(' ');
+  if(node.dataset){if(role)node.dataset.agentRole=role;else delete node.dataset.agentRole;}
+}
+
 function sessionColorHtml(session){
   const color=session?.color_hex||'#000000', label=session?.color_label||'Standard black';
   return `<span class="terminal-color"><i class="terminal-color-swatch" style="background:${esc(color)}" aria-hidden="true"></i>Terminal color: ${esc(label)}</span>`;
@@ -1729,7 +1751,7 @@ async function viewAgent(session){
     await loadTerminalAssets();
     const dialog=el('#agent-view-dialog');
     clearTimeout(agentViewTimer);agentViewGeneration++;const generation=agentViewGeneration;agentViewSession=session.id;
-    el('#agent-view-title').textContent=session.role||session.label||'Live agent';el('#agent-view-error').textContent='';
+    el('#agent-view-title').textContent=session.role||session.label||'Live agent';el('#agent-view-error').textContent='';paintAgentRole(dialog,agentColorRole(null,session));
     if(agentTerminal)agentTerminal.dispose();el('#agent-terminal').replaceChildren();
     agentTerminal=new Terminal({cols:80,rows:24,fontSize:14,screenReaderMode:true,convertEol:true,theme:{background:'#111827'}});
     // Ctrl+Shift+C copies the selection (the Linux terminal convention; the browser would otherwise open its inspector).
@@ -1778,7 +1800,7 @@ function openAgentsInto(out,state,contracts,sessionItems=[]){
     const session=sessionsById.get(agent.session_id); if(session)representedSessions.add(session.id);
     const task=humanTask(agent,state), stage=humanStage(agent,state,contracts), wording=agentStatusSummary(agent,state,contracts);
     const row=document.createElement('div');
-    row.className='agent-row';
+    row.className='agent-row';paintAgentRole(row,agentColorRole(agent,session));
     row.dataset.agentId=agent.id; row.dataset.sessionId=session?.id||''; row.dataset.task=task;
     const provider=agent.vendor||session?.vendor||'Provider not recorded', model=session?.model||'Model not recorded', effort=session?.effort?(session.effort==='xhigh'?'extra high':session.effort):'';
     const chosen=session?.launch_choice?' (chosen for this launch)':'';
@@ -1820,7 +1842,7 @@ function openAgentsInto(out,state,contracts,sessionItems=[]){
   }
   for(const session of visibleSessions.sort((left,right)=>String(left.id||'').localeCompare(String(right.id||'')) )){
     if(representedSessions.has(session.id))continue;
-    const row=document.createElement('div');row.className='agent-row session-starting';row.dataset.sessionId=session.id;row.dataset.task=session.task||'';
+    const row=document.createElement('div');row.className='agent-row session-starting';paintAgentRole(row,agentColorRole(null,session));row.dataset.sessionId=session.id;row.dataset.task=session.task||'';
     const superseded=Boolean(session.superseded_by_agent_id||session.read_only);
     const task=objectiveSummary(session.superseded_task||session.task||(superseded?'Recovered task':'Waiting to attach to a board agent'));
     const stage=superseded?'REPLACED, CLOSING':unmatchedSessionStage(session);
@@ -2143,6 +2165,7 @@ function render(data,managed){
   if(pausedNow!==renderWasPaused){layoutEpoch+=1;renderWasPaused=pausedNow;}   // pausing or resuming re-renders every box once, so controls recover
   const writesBefore=domWrites;
   const state=data.state||{},contracts=data.contracts||{},agents=Object.values(state.agents||{}),reviews=Object.values(state.qa_requests||{});
+  applyRoleColors(data.role_colors);
   const projectPaused=['paused','resuming'].includes(state.project_pause?.status);
   state.live_tasks=Array.isArray(data.live_tasks)?[...data.live_tasks]:[];
   state.in_scope_findings=Array.isArray(data.in_scope_findings)?[...data.in_scope_findings]:[];
@@ -4675,6 +4698,12 @@ def dashboard_payload(
     # 2026-10-27 Mission Control story: computed on the FULL state (events, every request) before the compaction below drops them,
     # with the same runtime facts the gate uses, so Ready/Accept is offered only when the ported gate allows it. Display only.
     try:
+        global_value = global_settings.load(settings_home) if settings_home is not None else None
+        result["role_colors"] = role_color_view(global_value)
+    except Exception:   # noqa: BLE001 - colours are a display: a damaged settings file falls back to the defaults, the dashboard keeps working
+        global_value = None
+        result["role_colors"] = role_color_view(None)
+    try:
         full = data["state"]
         story_agents = [
             value for value in (full.get("agents") or {}).values()
@@ -4686,11 +4715,21 @@ def dashboard_payload(
         result["story"] = story.for_page(
             full, live_contracts, live_tasks, {"commit": str((runtime or {}).get("commit", "")), "managed": bool(managed)},
             agents=story_agents, sessions=list(sessions_by_id.values()), cost=cost_center.summarize(board.board_dir(root)),
-            settings=global_settings.load(settings_home) if settings_home is not None else None, redact=board._redact_secrets, ledgers=test_ledgers)
+            settings=global_value, redact=board._redact_secrets, ledgers=test_ledgers)
     except Exception as error:   # noqa: BLE001 - the story is a display; the page still works from the old panels without it
         result["story"] = {"error": f"The summary could not be computed ({type(error).__name__}).", "empty": False, "agents": [], "tasks": {}, "order": []}
     result["state"] = _compact_dashboard_state(data["state"], live_tasks, live_session_ids, root=root)
     return result
+
+
+def role_color_view(settings: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    """Issue #92: the colour each story role (builder, reviewer, cto) wears in Mission Control, as {role: {hex, ink}}.
+
+    Takes the global settings document (None when this board has none: the defaults are used).
+    """
+    chosen = control.validated_role_colors((settings or {}).get("role_colors"), repair=True)
+    return {story_role: {key: control.ROLE_COLOR_CHOICES[chosen[role]][key] for key in ("hex", "ink")}
+            for story_role, role in (("builder", "delivery"), ("reviewer", "reviewer"), ("cto", "cto"))}
 
 
 def _harness_actions(state: dict[str, Any]) -> list[dict[str, Any]]:
