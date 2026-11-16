@@ -21,30 +21,29 @@ def flat(path: Path) -> str:
 
 
 class NotesNeverBlockARound(unittest.TestCase):
+    """2026-11-15 the owner made missing code documentation a bug again ("if a directive says document the code, if code is not
+    documented this is a bug"); every other theoretical or wording note still never costs a round. These tests pin both halves."""
+
     def test_the_reviewer_s_rules_text_says_so(self):
         text = flat(ROOT / "harness" / "review_brief.py").replace('" "', "")   # adjacent string literals read as one sentence
-        self.assertIn("docstrings or wording", text)
-        self.assertIn("never a declared check that can fail the round", text)
-        self.assertIn("A round whose only failures are such notes is a PASS", text)
+        self.assertIn("a theoretical variant of a case already handled", text)
+        self.assertIn("is a note, never a blocker or another round", text)
+        self.assertIn("Code documentation is the exception (owner 2026-11-15)", text)
+        self.assertIn("is a bug: FAIL, naming each gap by file:line", text)
+        self.assertNotIn("A round whose only failures are such notes is a PASS", text)
 
     def test_the_agents_directive_says_so(self):
         text = flat(ROOT / "harness" / "directives" / "00_SPAWN_DEVELOPMENT_DIRECTIVE.md")
-        self.assertIn("never a declared check that can fail a round", text)
-        self.assertIn("a round whose only failures are such notes is a PASS", text)
+        self.assertIn("a round that would only chase such notes is not opened", text)
+        self.assertIn("if code is not documented this is a bug", text)
+        self.assertNotIn("a round whose only failures are such notes is a PASS", text)
 
     def test_the_delivered_reviewer_card_and_the_served_reference_say_so(self):
-        """Codex R1-1 (2026-11-05): the startup card (directives/cards/REVIEWER.md, served by scripts/run_managed_agent.sh) and
-        the `review-workflow` reference (directives/AGENT.md) are what a managed Reviewer actually reads; the owner's 2026-11-03
-        FAIL order there is what produced the two docstring rounds, so these two texts are pinned too."""
         card = flat(ROOT / "directives" / "cards" / "REVIEWER.md")
-        self.assertIn("never a FAIL and never a declared check; a round whose only failures are such notes is a PASS", card)
-        self.assertNotIn("why-comment is material: FAIL", card)
+        self.assertIn("or why-comment is a bug (owner 2026-11-15): FAIL naming each gap by file:line", card)
         reference = flat(ROOT / "directives" / "AGENT.md")
-        self.assertIn("missing is recorded as a note naming each gap by file:line", reference)
-        self.assertIn("a round whose only failures are such notes is a PASS", reference)
-        self.assertNotIn("Any of them missing is material: FAIL", reference)
-        self.assertIn("the task created or changed is a note, never material", reference)
-
+        self.assertIn("the task created or changed is a bug, so material (owner 2026-11-15)", reference)
+        self.assertNotIn("missing is recorded as a note naming each gap by file:line", reference)
 
 if __name__ == "__main__":
     unittest.main()

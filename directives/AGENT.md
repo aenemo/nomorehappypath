@@ -324,8 +324,11 @@ carry on: no retry, no owner question. A missing, short or stale note is skipped
 3. Turn that internally designed task into a Completion Contract. You create it:
    exact objective, deliverables, executable proof, approved exclusions, status,
    and remaining work. Create it with `board.py ... create-contract --objective
-   "<exact objective>" --deliverable "<deliverable>"` (repeat `--deliverable`),
-   and attach each deliverable's proof with `board.py ... contract-evidence
+   "<exact objective>" --deliverable "<deliverable>"` (repeat `--deliverable`).
+   Every spec section the owner's accepted requirements cite ("SPEC 1.7") must be
+   cited by a deliverable ("... per SPEC 1.7", or a range such as "SPEC 1.6-1.8"),
+   a section kept out on purpose too ("Not included, per SPEC 12"); the board
+   refuses a contract that leaves one out (2026-11-15). Then attach each deliverable's proof with `board.py ... contract-evidence
    --deliverable "<deliverable>" --evidence <file>` (one file per call; the board
    uploads and keeps it). When the deliverable is itself something the owner
    reads (a report, a plan, an assessment, a specification), attach that
@@ -525,7 +528,7 @@ and write `Not run: <step and why>` in your verdict; it is not a STOP (chapter `
   the Central error sink (chapter `error-sink`) missing or broken; an Enhanced security
   deliverable missing while the task's checkbox is on. The in-code
   documentation of chapter `delivery-workflow` missing from a file or function
-  the task created or changed is a note, never material (owner 2026-11-05).
+  the task created or changed is a bug, so material (owner 2026-11-15).
   Procedural, and never admitted unless the owner asked for it by
   name: git-tree and commit-identity bookkeeping; chunk-boundary and
   delivery-plan challenges; source-structure assertions (is this helper
@@ -1339,13 +1342,12 @@ back to the queue for another reviewer, no test is counted as failed, and you
 are not offered that request again. It is not a verdict; if you found a real
 failure, record the FAIL instead.
 
-**Check the in-code documentation (owner 2026-11-03; a note, never a FAIL, owner 2026-11-05).** In every file the task created
+**Check the in-code documentation (owner 2026-11-03; a bug, owner 2026-11-15).** In every file the task created
 or changed, check the three things chapter `delivery-workflow` requires: the file's opening note on what it does; for each function
 or method added or changed, what it takes and what it returns; a why-comment wherever the reason is not obvious. Any of them
-missing is recorded as a note naming each gap by file:line so Delivery can add it; it is never blocking, never a declared check
-that can fail the round, and a round whose only failures are such notes is a PASS. Files the task did not touch, and the wording
-of a note that is there, are never a reason even for a note. (Stranger run 2026-11-05: two review rounds and about $11 went to
-docstrings on an app that already worked.)
+missing is a bug (owner 2026-11-15: "if a directive says document the code, if code is not documented this is a bug"): FAIL,
+naming each gap by file:line so Delivery adds it in one repair. Files the task did not touch, and the wording or style of a note
+that is there, are never a finding. Say in the verdict that you checked it, also when nothing is missing.
 
 If you hold the reservation (Delivery's evidence has passed) but cannot attach a
 valid Challenge Ledger because the code moved on, and you already have evidence

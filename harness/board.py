@@ -9502,6 +9502,16 @@ def create_contract(root: Path, agent_id: str, objective: str, deliverables: lis
         if agent["role"] not in DEVELOPER_ROLES or agent["task"] == AWAITING_OWNER_DIRECTION:
             raise ValueError("only an active Delivery Agent may create its Completion Contract")
         task = agent["task"]
+        accepted = ((state.get("requirement_confirmations") or {}).get(task) or {}).get("text") or (
+            ((state.get("requirement_proposals") or {}).get(task) or {}).get("text") or "")
+    # 2026-11-15: a spec section the owner's accepted requirements cite must be cited by a deliverable, or it falls out of the build.
+    missing = contract.uncovered_spec_sections(accepted, deliverables)
+    if missing:
+        named = "; ".join(f"SPEC {section} (requirements: \"{line[:160]}\")" for section, line in sorted(missing.items()))
+        raise ValueError(
+            f"the accepted requirements cite spec sections that no deliverable cites: {named}. Add a deliverable for each, or name the "
+            "section in the deliverable that delivers it (for example \"... per SPEC 1.7\"); a section kept out on purpose is named in a "
+            "deliverable too (for example \"Not included, per SPEC 12\"). Nothing the owner approved may fall out of the contract.")
     value = contract.create_contract(root, task, objective, deliverables)
     with locked_state(root) as state:
         agent = _require_writable_agent(state, agent_id)

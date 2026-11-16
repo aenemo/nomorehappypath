@@ -202,6 +202,41 @@ def validate_profile(path: Path):
     profile=_load(path); missing=sorted(k for k in REQUIRED_PROFILE if not profile.get(k))
     return {"valid": not missing, "missing": missing, "profile": profile}
 
+# 2026-11-15 (PropDesk Public): the owner's requirements said "(SPEC 1.1, 1.7)" and no deliverable of the contract cited 1.7, so the
+# rename it required was never built, checked or released against. A spec section the accepted requirements cite must be cited by a
+# deliverable. Citations look like "SPEC 1.1, 1.7", "SPEC 1.1-1.5" (a range of one parent), "(SPEC 11)" or "SPEC §3.4".
+_SECTION = r"\d+(?:\.\d+)*"
+_SPEC_CITATION = re.compile(r"\bSPEC\b\s*§?\s*(" + _SECTION + r"(?:\s*[-\u2013\u2014]\s*" + _SECTION + r")?"
+                            r"(?:\s*(?:,|and|&|/)\s*§?\s*" + _SECTION + r"(?:\s*[-\u2013\u2014]\s*" + _SECTION + r")?)*)", re.I)
+_SECTION_OR_RANGE = re.compile(r"(" + _SECTION + r")(?:\s*[-\u2013\u2014]\s*(" + _SECTION + r"))?")
+
+
+def cited_spec_sections(text):
+    """Return {section: the line that cites it} for every spec section cited in text; a range of one parent ("1.1-1.5") is expanded."""
+    found = {}
+    for line in str(text or "").splitlines():
+        for citation in _SPEC_CITATION.finditer(line):
+            for start, end in _SECTION_OR_RANGE.findall(citation.group(1)):
+                sections = [start]
+                head, _, first = start.rpartition(".")
+                last = end.rpartition(".")[2] if end else ""
+                # a same-parent, ascending range of at most 50 sections is expanded; anything else counts its two ends only
+                if end and end.rpartition(".")[0] == head and first.isdigit() and last.isdigit() and 0 <= int(last) - int(first) <= 50:
+                    sections = [(head + "." if head else "") + str(n) for n in range(int(first), int(last) + 1)]
+                elif end:
+                    sections.append(end)
+                for section in sections:
+                    found.setdefault(section, line.strip())
+    return found
+
+
+def uncovered_spec_sections(requirements_text, deliverables):
+    """The spec sections the accepted requirements cite that no deliverable cites, as {section: requirement line}."""
+    wanted = cited_spec_sections(requirements_text)
+    covered = cited_spec_sections("\n".join(str(item) for item in deliverables or []))
+    return {section: line for section, line in wanted.items() if section not in covered}
+
+
 def create_contract(root, task, objective, deliverables, exclusions=None):
     """Create and save a brand-new Completion Contract for task under root.
 
