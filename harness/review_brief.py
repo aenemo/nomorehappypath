@@ -78,7 +78,7 @@ def build(
     controls whether their outcomes are disclosed. Return: a dict with the
     full brief, including its own sha256 digest.
     """
-    from harness import board  # local: board imports this module
+    from harness import board, contract_check  # local: board imports this module
     task = _text(request.get("task"))
     if not task:
         raise ValueError("review brief requires an exact task")
@@ -186,7 +186,8 @@ def build(
     brief = {
         "version": 1, "task": task, "request_id": _text(request.get("id")),
         "requirements": {
-            "text": _text(confirmation.get("text")),
+            # the whole accepted text (confirmation allows 12,000 characters): the final Reviewer reconciles every line of it
+            "text": str(confirmation.get("text") or "").strip()[:12000],
             "confirmed_at": _text(confirmation.get("confirmed_at")),
             "version": confirmation.get("version", 1),
             "contract_revision": request.get("contract_revision") or {},
@@ -334,11 +335,40 @@ def build(
                 "hunt boundaries that never or only rarely happen - note them as non-blocking. "
                 "This product serves one person on one computer (owner 2026-11-05): a theoretical variant of a case already handled "
                 "(another spelling of the same call, a path a solo user never takes) is a note, never a blocker or another round. "
-                "The same for notes in the code: a check or finding about comments, file headers, docstrings or wording (whether a "
-                "function says what it takes and returns, whether a file opens with an explanation) is never blocking and never a "
-                "declared check that can fail the round; record it as a note. A round whose only failures are such notes is a PASS."
+                "Code documentation is the exception (owner 2026-11-15): in a file this task created or changed, a missing opening "
+                "note on what the file does, a missing takes-and-returns line on a function added or changed, or a missing why-comment "
+                "where the reason is not obvious is a bug: FAIL, naming each gap by file:line. The wording or style of a note that is "
+                "there, and files the task did not touch, are never a finding."
             ),
         }
+        # 2026-11-15 (PropDesk Public): a requirement the Reviewer's early checks did not fully check ("Replace visible PropDesk
+        # branding", covered only by another requirement's home-page check) passed on the screen while 52 old names stayed in the code.
+        block = confirmation.get("contract_check") or {}
+        results = block.get("results") or {}
+        reasons = block.get("did_not_run") or {}
+        labels = [item for item in (block.get("labels") or []) if isinstance(item, dict)]
+        unchecked = []
+        for item in labels:
+            outcome = str(results.get(str(item.get("n"))) or "")
+            # a "checked" label says a check was declared, not that it ran: a check that failed or did not run counts as not checked
+            if item.get("label") != contract_check.CHECKED or outcome in ("failed", "did_not_run"):
+                entry = {key: item.get(key, "") for key in ("n", "criterion", "label", "coverage", "reason", "note")}
+                if outcome:
+                    entry["last_run"] = outcome + (f": {_text(reasons.get(str(item.get('n'))))}" if reasons.get(str(item.get("n"))) else "")
+                unchecked.append(entry)
+        if unchecked:
+            brief["final_stage"]["not_checked_in_advance"] = unchecked[:MAX_ITEMS]
+        # always at the final review (Codex R1-1): the early criteria are not an inventory, a line they left out has no label at all
+        brief["final_stage"]["verify_yourself"] = (
+                ("No requirement was checked in advance (no early checks were recorded). " if not labels else
+                 "Each requirement under not_checked_in_advance had no passed check of its own before this review. " if unchecked else
+                 "Every early criterion has a passed check, but the criteria may not cover every line. ")
+                + "Reconcile the whole of requirements.text, the owner's accepted words, line by line, not only the short criteria: "
+                "the criteria may have shortened or left out a line. Verify each line that no passed check covers yourself and record "
+                "how. A rename, a removal, or a change required everywhere is verified by searching the delivered code for what must "
+                "be gone, never by the screen alone, and is never a wording note. One that is not met is a missing deliverable, except "
+                "where the owner waived it or closed it (risk_and_scope and requirements.owner_decisions)."
+            )
         if brief["process"]["task_kind"] == "analysis":
             brief["final_stage"]["end_to_end"] = (
                 "Code analysis: do NOT start the app. The deliverable is the report, so the walk is opening FINDINGS.md exactly as the owner "

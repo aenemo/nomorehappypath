@@ -33,24 +33,26 @@ class ReviewerChecksTheDocumentationTests(unittest.TestCase):
         start = self.text.index(f"## {name}")
         return self.text[start:self.text.index("\n## ", start + 5)]
 
-    def test_the_reviewer_notes_missing_documentation_by_file_and_line_and_never_fails_on_it(self):
-        """Owner 2026-11-05 (stranger run): a missing note is reported by file:line but never costs a round."""
+    def test_the_reviewer_fails_missing_documentation_by_file_and_line(self):
+        """Owner 2026-11-15: "if a directive says document the code, if code is not documented this is a bug" (replaces 2026-11-05)."""
         review = self.chapter("review-workflow")
-        self.assertIn("Check the in-code documentation", review)
-        self.assertIn("missing is recorded as a note naming each gap by file:line", review)
-        self.assertIn("never a declared check\nthat can fail the round, and a round whose only failures are such notes is a PASS", review)
-        self.assertNotIn("missing is material: FAIL", review)
+        self.assertIn("Check the in-code documentation (owner 2026-11-03; a bug, owner 2026-11-15)", review)
+        self.assertIn("missing is a bug", review)
+        self.assertIn("FAIL,\nnaming each gap by file:line", review)
+        self.assertIn("the wording or style of a note\nthat is there, are never a finding", review)
+        self.assertNotIn("missing is recorded as a note naming each gap by file:line", review)
 
-    def test_materiality_lists_missing_documentation_as_a_note(self):
-        self.assertIn("the task created or changed is a note, never material", self.chapter("materiality"))
+    def test_materiality_lists_missing_documentation_as_a_bug(self):
+        materiality = self.chapter("materiality")
+        self.assertIn("the task created or changed is a bug, so material (owner 2026-11-15)", materiality)
+        self.assertNotIn("the task created or changed is a note, never material", materiality)
 
     def test_both_role_cards_carry_the_rule(self):
         delivery = (ROOT / "directives" / "cards" / "DELIVERY.md").read_text(encoding="utf-8")
         reviewer = (ROOT / "directives" / "cards" / "REVIEWER.md").read_text(encoding="utf-8")
         self.assertIn("open with what the file does, say what each function you add or change takes and returns", delivery)
-        self.assertIn("or why-comment is a note naming each gap by file:line, never a FAIL and never a declared check", reviewer)
-        self.assertNotIn("why-comment is material: FAIL", reviewer)
-
+        self.assertIn("or why-comment is a bug (owner 2026-11-15): FAIL naming each gap by file:line", reviewer)
+        self.assertNotIn("never a FAIL and never a declared check", reviewer)
 
 if __name__ == "__main__":
     unittest.main()
