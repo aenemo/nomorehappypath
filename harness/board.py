@@ -39,6 +39,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import screen_script as screen_script_runner
 from harness import difficulty_note
+from harness import saved_data as saved_data_rules
 from harness import code_quality, standing_checks
 from harness import test_machine
 from harness import failure_words
@@ -2263,9 +2264,12 @@ def _broker_for_state(root: ProjectRoot, state: dict[str, Any], task: str) -> gi
 
 
 def _harness_owned_path(path: str) -> bool:
-    """A path inside .harness, the app's own storage (never project content)."""
+    """A path inside .harness, or the board-made .previous-version/ upgrade-check export (never project content)."""
     path = path.strip().strip('"')
-    return path == ".harness" or path.startswith(".harness/")
+    return (
+        path == ".harness" or path.startswith(".harness/")
+        or path == ".previous-version" or path.startswith(".previous-version/")
+    )
 
 
 def _text_line_paths(line: str) -> list[str]:
@@ -11357,6 +11361,10 @@ def _review_candidate_checkout(root: Path, state: dict[str, Any], request: dict[
 
     Reviewer ledgers remain durable authoring evidence under the board, so they
     are copied into the disposable checkout without becoming candidate files.
+    When `request["saved_data"]` declares a change against a `known` previous
+    version (spec 3.4.1), that version's real files are also exported into
+    this checkout's `.previous-version/` folder before it is yielded, so the
+    Reviewer's upgrade-check row can start the old version for real.
     """
     code_root = project_context(root).code_root
     workspace, commit = _review_checkout_source(root, state, request)
@@ -11396,6 +11404,30 @@ def _review_candidate_checkout(root: Path, state: dict[str, Any], request: dict[
         candidate_ledger = checkout / relative
         candidate_ledger.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, candidate_ledger)
+        # Saved-data upgrade safety (spec 3.4.1): the Reviewer's upgrade-check row starts the
+        # LAST ACCEPTED version from its own real files, never a description of it. The export lives
+        # only inside this disposable checkout (deleted with the whole temporary_root on exit), so it
+        # is never tracked, never part of any reviewed-file manifest, and the request-time refusal of
+        # a candidate that already tracks ".previous-version" (board.py's _saved_data_request_info)
+        # guarantees this name is always free here. A failed export (an unreadable or missing previous
+        # commit) is left for the Reviewer's own row to discover and report as "not run" - this
+        # checkout must not fail to materialize the candidate itself over a problem with its previous version.
+        saved_data_info = request.get("saved_data") or {}
+        if (
+            saved_data_info.get("declared_changed")
+            and saved_data_info.get("previous_state") == "known"
+            and saved_data_info.get("previous_commit")
+        ):
+            previous_archive = temporary_root / "previous-version.tar"
+            exported = git_process.run(
+                ["git", "archive", "--format=tar", "--output", str(previous_archive), str(saved_data_info["previous_commit"])],
+                cwd=workspace, capture_output=True, text=True,
+            )
+            if exported.returncode == 0:
+                previous_dir = checkout / ".previous-version"
+                previous_dir.mkdir()
+                with tarfile.open(previous_archive, "r") as stream:
+                    stream.extractall(previous_dir)
         support = request.get("challenge_support_files") or {}
         if support:
             # The Reviewer's supporting files (frozen at attach, flat validated names) go in their own folder, never over a candidate file.
@@ -14421,6 +14453,182 @@ def _analysis_proof_problem(root: Path, state: dict[str, Any], task: str, change
     return standing_checks.analysis_hand_in_problem(summary, changed_files)
 
 
+_SAVED_DATA_PATH_TOKEN = re.compile(r"[\w./-]+\.(?:py|sql|rb|prisma|js|ts|json|ya?ml)\b")
+
+
+def _path_like_tokens(text: str) -> list[str]:
+    """Filename-looking tokens inside free text (Delivery's --changes or --summary note).
+
+    Delivery's own repair/changes note often names the exact file it touched;
+    this lets the saved-data hint (spec 3.2.2) notice it too, alongside the
+    real Git diff, in projects or test fixtures where a full diff is not
+    available. Returns the matches in the order found (never deduplicated or
+    sorted here; the caller merges this into a set).
+    """
+    return _SAVED_DATA_PATH_TOKEN.findall(text or "")
+
+
+def _git_main_tip(repository: Path) -> str:
+    """The project's `main` tip commit hash, or "" when it cannot be resolved."""
+    result = git_process.run(["git", "rev-parse", "-q", "--verify", "refs/heads/main"], cwd=repository, capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _git_tree_entry_count(repository: Path, commit: str) -> int:
+    """How many entries `commit`'s tree holds (0 for the board's own empty-init commit)."""
+    result = git_process.run(["git", "ls-tree", "-r", "--name-only", commit], cwd=repository, capture_output=True, text=True)
+    return len([line for line in result.stdout.splitlines() if line.strip()]) if result.returncode == 0 else 0
+
+
+def _git_changed_paths_with_added_lines(repository: Path, previous_commit: str, candidate_commit: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Non-test paths that differ between previous_commit and candidate_commit, and each one's ADDED lines.
+
+    Returns ([changed, non-test paths], {path: [lines the diff added]}); both
+    empty when the diff cannot be read. Used only to feed `saved_data.hint`.
+    """
+    if not previous_commit or not candidate_commit or previous_commit == candidate_commit:
+        return [], {}
+    names = git_process.run(["git", *accepted_bytes.name_only_arguments(f"{previous_commit}..{candidate_commit}")], cwd=repository, capture_output=True, text=True)   # the one rename rule
+    if names.returncode != 0:
+        return [], {}
+    paths = [line for line in names.stdout.splitlines() if line.strip()]
+    added: dict[str, list[str]] = {}
+    for path in paths:
+        if saved_data_rules.is_test_path(path):
+            continue
+        diff = git_process.run(["git", "diff", "-U0", f"{previous_commit}..{candidate_commit}", "--", path], cwd=repository, capture_output=True, text=True)
+        if diff.returncode == 0:
+            added[path] = [line[1:] for line in diff.stdout.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    return [path for path in paths if not saved_data_rules.is_test_path(path)], added
+
+
+def _saved_data_request_info(root: Path, execution_root: Path, review_artifact: dict[str, Any], changes: str, summary: str, saved_data: str = "") -> dict[str, Any]:
+    """Freeze the saved-data facts of one final-acceptance review request (spec 3.1-3.3).
+
+    Args:
+        execution_root: the candidate's working copy (already the clean,
+            immutable candidate tree at this point in request_review).
+        review_artifact: this request's `_git_review_artifact` result.
+        changes, summary: Delivery's free-text notes. `summary` may carry a
+            "Saved data: ..." declaration (`delivery_declaration`); when it
+            carries none at all, spec 3.2.1's "no flag means unchanged" rule
+            applies, so this is never refused for omitting it - only a
+            declared "changed" with a missing or broken UPGRADING.md is.
+            Both texts are also scanned for filenames the hint should notice.
+        saved_data: the `--saved-data` CLI flag's raw text (spec 3.2.1's
+            "one plain sentence"), when Delivery gave one. Takes priority
+            over `summary`'s loose phrase; its exact text (not reparsed or
+            trimmed of any "Saved data: ..." prefix it happens to include)
+            becomes `description`, so a Reviewer check that greps the brief
+            for the operator's literal words still finds them verbatim.
+
+    Returns: {"rules": <bool>, "declared_changed", "description",
+        "previous_commit", "previous_state", "hint_paths"}. "rules" is True
+        (the Reviewer's verdict line becomes required, spec 3.2.3) only when
+        Delivery said something explicit about saved data, or the hint found
+        a likely path; a task that never mentions saved data and whose files
+        never match the hint is entirely unaffected (spec section 10: this
+        never reaches back onto a task the rule has no reason to touch).
+        Raises ValueError (naming the problem, per 3.3.3/3.4.1) when a
+        declared change lacks a valid UPGRADING.md, or the candidate tracks
+        a path named `.previous-version`.
+    """
+    if saved_data.strip():
+        raw_declaration: dict[str, str] | None = {"status": "changed", "what": saved_data.strip()}
+        declared_changed = saved_data.strip().lower() != "unchanged"
+        description = saved_data.strip()
+    else:
+        raw_declaration = saved_data_rules.delivery_declaration(summary)
+        declaration = raw_declaration or {"status": "unchanged"}
+        declared_changed = declaration["status"] == "changed"
+        description = declaration.get("what", "") if declared_changed else "unchanged"
+    tracked = review_artifact.get("files") or []
+    if any(str(path) == ".previous-version" or str(path).startswith(".previous-version/") for path in tracked):
+        raise ValueError(
+            "the candidate tracks a path named .previous-version; that name is reserved for the board's own "
+            "upgrade-check export and must be renamed before a final-acceptance review can be requested"
+        )
+    has_repository = bool(review_artifact.get("available"))
+    main_commit = _git_main_tip(execution_root) if has_repository else ""
+    main_tree_entries = _git_tree_entry_count(execution_root, main_commit) if main_commit else None
+    previous_state = saved_data_rules.previous_state(has_repository, main_commit, main_tree_entries)
+    hint_input = set(tracked)
+    for text in (changes, summary):
+        hint_input.update(_path_like_tokens(text))
+    diff_paths: list[str] = []
+    added_lines: dict[str, list[str]] = {}
+    if previous_state == "known":
+        diff_paths, added_lines = _git_changed_paths_with_added_lines(execution_root, main_commit, str(review_artifact.get("commit") or ""))
+    hint_paths = saved_data_rules.hint(sorted(hint_input | set(diff_paths)), added_lines)
+    if declared_changed:
+        upgrading_path = execution_root / "UPGRADING.md"
+        if not upgrading_path.is_file():
+            raise ValueError(
+                'a saved-data change was declared, but UPGRADING.md is missing at the project root (spec 3.3.3: '
+                '"What changes in your saved data", "Where your data is", "Before you update", "If something goes wrong")'
+            )
+        missing = saved_data_rules.missing_upgrading_sections(upgrading_path.read_text(encoding="utf-8", errors="replace"))
+        if missing:
+            raise ValueError("UPGRADING.md is missing or has an empty required heading: " + ", ".join(missing))
+    return {
+        "rules": bool(raw_declaration is not None or hint_paths),
+        "declared_changed": declared_changed, "description": description,
+        "previous_commit": main_commit, "previous_state": previous_state, "hint_paths": hint_paths,
+    }
+
+
+def _certified_ledger_row_outcome(request: dict[str, Any], row_id: str) -> str | None:
+    """"passed" when row_id is a certified result of this request's attached ledger, else None.
+
+    The board's scenario-ledger rule makes ledger execution all-or-nothing
+    (any failing row raises ScenarioSimulationsFailed before a bundle is ever
+    stored, chapter scenario-ledger), so a row present in a stored bundle has
+    always passed; this never needs to distinguish pass from fail by reading
+    evidence text.
+    """
+    bundle = (request.get("challenge_execution") or {}).get("bundle") or {}
+    if row_id and row_id in (bundle.get("scenario_ids") or []):
+        return "passed"
+    return None
+
+
+def _saved_data_verdict_problem(request: dict[str, Any], summary: str) -> str:
+    """Why a final-acceptance PASS cannot be recorded under the saved-data rules ("" when it may, spec 3.2.3/3.4.6).
+
+    A task whose final request predates this rule (no "saved_data" on the
+    request) is exempt (spec section 10: new fields only).
+    """
+    info = request.get("saved_data")
+    if not isinstance(info, dict) or not info.get("rules"):
+        return ""
+    parsed = saved_data_rules.parse_verdict_line(summary)
+    if parsed is None:
+        return ('the verdict needs one "Saved data: ..." line (unchanged, or changed with the upgrade check outcome); '
+                "see reference saved-data")
+    if parsed["status"] == "malformed":
+        return f'the "Saved data: ..." line does not match an accepted form: {parsed["line"]!r}'
+    if parsed["status"] == "unchanged":
+        if info.get("declared_changed"):
+            return ('the verdict says "Saved data: unchanged" but Delivery declared a saved-data change on this '
+                    "request; the reviewer's line must state what was checked, not that nothing changed")
+        hint_paths = list(info.get("hint_paths") or [])
+        if hint_paths and not parsed.get("reason"):
+            return ('the verdict says "Saved data: unchanged" but the board\'s hint lists ' + ", ".join(hint_paths[:5])
+                    + ' as likely saved-data files; write "Saved data: unchanged — <why the listed files do not '
+                      'change saved data>", or "Saved data: changed — ..." if they do')
+        return ""
+    outcome = parsed.get("outcome")
+    if outcome == "missing":
+        return 'the verdict says the upgrade check is missing required parts ("upgrade check: missing ..."); this cannot be a PASS'
+    if outcome == "first_version" and info.get("previous_state") != "first":
+        return 'the verdict says "first version, nothing to upgrade" but the last-accepted version is not a first/empty one'
+    if outcome in {"passed", "failed"}:
+        row_id = str(parsed.get("row_id") or "")
+        if _certified_ledger_row_outcome(request, row_id) != "passed":
+            return f'the verdict cites upgrade check row {row_id!r} as {outcome}, but no certified PASSED result for that row exists on this review'
+    return ""
+
+
 def _standing_verdict_problem(root: Path, state: dict[str, Any], request: dict[str, Any], task: str, summary: str, quality_given: bool) -> str:
     """What a final PASS is missing under the standing checks. The kind of task decides the extra lines: a report-only task (Spec or Code
     analysis) names what it did not examine; only a Code analysis counts its findings (a spec has none, and a clean analysis may say 0 of 0)."""
@@ -15351,11 +15559,17 @@ def _repair_changed_tests(
     return [{"path": path, "reason": reasons[path]} for path in paths]
 
 
-def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: str = "chunk", chunk: str = "", changes: str = "", evidence: str = "", test_command: str = "", subtask: str = "", test_scope: str = "full", scope_reason: str = "", repair_package_id: str = "") -> dict[str, Any]:
+def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: str = "chunk", chunk: str = "", changes: str = "", evidence: str = "", test_command: str = "", subtask: str = "", test_scope: str = "full", scope_reason: str = "", repair_package_id: str = "", saved_data: str = "") -> dict[str, Any]:
     """Queue a direct independent review for the multi-hat delivery-agent flow.
 
     The delivery agent performs its own QA; the standing reviewer then claims
     this request. A failure reopens work and requires a concise fix summary.
+
+    `saved_data` is spec 3.2.1's "--saved-data" text for a final-acceptance
+    request only: one plain sentence describing what changes in the owner's
+    saved data, or "" (the default) to leave it to any loose "Saved data:
+    ..." phrase already in `summary`, or to no declaration at all (spec
+    3.2.1's "no flag means unchanged"). See `_saved_data_request_info`.
     """
     if phase not in {"chunk", "subtask_acceptance", "final_acceptance"}:
         raise ValueError("phase must be chunk, subtask_acceptance, or final_acceptance")
@@ -15502,6 +15716,10 @@ def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: 
             problem = _analysis_proof_problem(root, state, developer["task"], list(review_artifact.get("files") or []), summary)
             if problem:
                 raise ValueError(problem)
+        saved_data_info: dict[str, Any] = (
+            _saved_data_request_info(root, execution_root, review_artifact, changes, summary, saved_data)
+            if phase == "final_acceptance" else {}
+        )
         if subtask:
             _require_owned_files(
                 item, list(review_artifact.get("files") or []),
@@ -15635,6 +15853,7 @@ def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: 
             "repair_package_id": (selected_repair_package or {}).get("id", ""),
             "contract_revision": contract_revision, "environment_identity": environment_identity,
             "owner_documents": _owner_documents_now(root, developer["task"]),
+            "saved_data": saved_data_info,
             "changes_summary": changes, "changed_tests": changed_tests, "test_command": test_command, "status": "authoring", "delivery_state": "executing",
             "staged_authoring": True, "requested_at": requested_at,
             "review_wait_started_at": requested_at, "review_wait_stopped_at": None,
@@ -15858,6 +16077,7 @@ def request_review(root: Path, agent_id: str, ledger: str, summary: str, phase: 
             "contract_revision": contract_revision,
             "environment_identity": environment_identity,
             "owner_documents": _owner_documents_now(root, developer["task"]),
+            "saved_data": saved_data_info,
             "changes_summary": changes, "changed_tests": changed_tests, "test_command": test_command,
             "status": "reserved" if staged_existing.get("status") == "reserved" else "open",
             "delivery_state": "passed", "staged_authoring": True,
@@ -17901,7 +18121,13 @@ def qa_result(
     """Record the Reviewer agent_id's formal verdict (result, summary,
     evidence, finalization_classification, failure_members,
     code_quality_notes) on request_id under root, judging it against prior
-    review rounds. Return value: the updated request/outcome dict."""
+    review rounds. Return value: the updated request/outcome dict.
+
+    A PASS on a request whose saved-data rules are engaged (spec 3.2.3) also
+    requires `summary` to carry the one required "Saved data: ..." line,
+    consistent with the certified ledger results; see
+    `_saved_data_verdict_problem`.
+    """
     if result not in {"passed", "failed"}:
         raise ValueError("QA result must be passed or failed")
     if not summary.strip():
@@ -17941,6 +18167,9 @@ def qa_result(
         if result == "passed" and request and request.get("phase") == "final_acceptance":
             task_name_here = str(request.get("task") or "")
             problem = _standing_verdict_problem(root, state, request, task_name_here, summary, bool(code_quality.clean(code_quality_notes)))
+            if problem:
+                raise ValueError(problem)
+            problem = _saved_data_verdict_problem(request, summary)
             if problem:
                 raise ValueError(problem)
         if (result == "failed" and request and request.get("phase") == "final_acceptance" and standing_checks.enabled()
@@ -18904,8 +19133,61 @@ def refresh_owner_documents(root: Path, task: str) -> list[dict[str, Any]]:
     return refreshed
 
 
+def _git_show_file(repository: Path, commit: str, path: str) -> str:
+    """Text of `path` at `commit` via `git show`, or "" when it cannot be read."""
+    result = git_process.run(["git", "show", f"{commit}:{path}"], cwd=repository, capture_output=True, text=True)
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _saved_data_release_snapshot(root: Path, state: dict[str, Any], task: str, request: dict[str, Any] | None) -> dict[str, Any]:
+    """Freeze the Accept card's saved-data box (spec 3.5.1), from the task's newest final request.
+
+    Reads the newest final-acceptance request (passed, or owner-waived
+    failed - never cleared by a waiver, spec 3.2.4), not only a passed one,
+    because a waived failure still shows the box with the failure. Returns
+    {} when the saved-data rules did not apply to that request (an older
+    task, or a final request from before this rule existed).
+    """
+    info = (request or {}).get("saved_data") or {}
+    if not info.get("rules"):
+        return {}
+    # The required "Saved data: ..." line is the REVIEWER's verdict (result_summary), never
+    # Delivery's own hand-in summary (certified finding S-002): the hand-in only carries
+    # Delivery's declaration of what changed, not the upgrade check's actual outcome, so reading
+    # it here showed every changed-data release as "unchanged" with no backup box at all.
+    parsed = saved_data_rules.parse_verdict_line(str((request or {}).get("result_summary") or "")) or {}
+    if parsed.get("status") != "changed":
+        return {"status": "unchanged"}
+    workspace_value = str((state.get("task_workspaces") or {}).get(task) or "")
+    workspace = Path(workspace_value) if workspace_value and Path(workspace_value).is_dir() else project_context(root).code_root
+    commit = str((request or {}).get("reviewed_commit") or "")
+    upgrading_text = _git_show_file(workspace, commit, "UPGRADING.md") if commit else ""
+    sections = [
+        {"heading": heading.removeprefix("## "), "body": saved_data_rules.upgrading_sections(upgrading_text).get(heading, "")}
+        for heading in saved_data_rules.REQUIRED_UPGRADING_HEADINGS
+    ]
+    outcome = str(parsed.get("outcome") or "")
+    snapshot_dict: dict[str, Any] = {
+        "status": "changed", "what": info.get("description", ""), "result": outcome,
+        "reason": str(parsed.get("why") or parsed.get("missing") or ""),
+        "upgrading_sections": sections,
+        "previous_commit": info.get("previous_commit", ""),
+        "candidate_commit": commit, "candidate_tree": str((request or {}).get("reviewed_tree_hash") or ""),
+        "request_id": str((request or {}).get("id") or ""), "recorded_at": now(),
+    }
+    encoded = json.dumps(snapshot_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    snapshot_dict["sha256"] = hashlib.sha256(encoded).hexdigest()
+    return snapshot_dict
+
+
 def record_release_ready(root: Path, agent_id: str, task: str, checks: dict[str, Any]) -> dict[str, Any]:
-    """Record the only state that Mission Control may present as complete."""
+    """Record the only state that Mission Control may present as complete.
+
+    Also freezes `release["saved_data"]` (spec 3.5.1) from the task's newest
+    final request, so the Accept card's box and backup-confirmation gate
+    (`record_release_decision`) have a fixed snapshot to read and hash,
+    independent of anything that happens to the request afterward.
+    """
     with locked_state(root) as state:
         agent = _require_agent(state, agent_id)
         if agent["role"] != "cto":
@@ -18965,6 +19247,7 @@ def record_release_ready(root: Path, agent_id: str, task: str, checks: dict[str,
         if checks.get("build_required"):
             release["build"] = _release_build_snapshot(root, state, task)
         release["app_openable"] = _release_app_openable(root, state, task)
+        release["saved_data"] = _saved_data_release_snapshot(root, state, task, _newest_final_request(state, task))
         state.setdefault("release_lifecycle", {})[task] = lifecycle_record
         state.setdefault("releases", {})[task] = release
         # A NEW release candidate supersedes any earlier owner response. Without
@@ -19112,12 +19395,22 @@ def _new_upload(state: dict[str, Any], task: str, release: dict[str, Any], desti
 
 
 def record_release_decision(root: Path, task: str, decision: str, reason: str = "",
-                            upload_destination: dict[str, str] | None = None) -> dict[str, Any]:
+                            upload_destination: dict[str, str] | None = None, saved_data_confirmed: str = "") -> dict[str, Any]:
     """Persist the owner's response against an already released task.
 
     `upload_destination` is the project's {"url", "branch"} as the trusted manager registry holds it right now (None when
     the project has none); an Accept saves it on the decision as `upload` (see `_new_upload`). Only this owner function
     ever creates an upload: administrative closure and the acceptance writers never do.
+
+    `saved_data_confirmed` is the owner's separate backup confirmation (spec 3.5.3-3.5.4): for a
+    changed-data release it must equal the release's frozen `saved_data.sha256`, or Accept is refused.
+    A retried Accept (the saved decision's Git transaction failed) reuses the confirmation already on
+    the saved decision and needs none again.
+
+    Spec 3.1: for a changed-data release, Accept is also refused if `main` has moved past the
+    `saved_data.previous_commit` the upgrade check actually ran from (the release's own
+    `acceptance_base_commit` no longer matches it) - that check proved a restore from a version
+    that is no longer the one this release would upgrade from.
     """
     upload_destination = _normalized_upload_destination(upload_destination)
     task = task.strip()
@@ -19173,6 +19466,23 @@ def record_release_decision(root: Path, task: str, decision: str, reason: str = 
             retry_response = dict(prior)
         else:
             retry_response = None
+        if decision == "accepted" and retry_response is None:
+            saved_data_box = release.get("saved_data") or {}
+            if saved_data_box.get("status") == "changed" and saved_data_confirmed.strip() != str(saved_data_box.get("sha256") or ""):
+                raise ValueError("This update changes your saved data. Confirm you have made a backup, then press Accept again.")
+            # Spec 3.1: the upgrade check ran against `main` as it stood when the final review was
+            # requested (saved_data.previous_commit); if main has since moved, that check no longer
+            # proves anything about the version this release would actually upgrade from, so Accept
+            # is refused with the same "arrange another review" reason the existing base-commit check
+            # (accept_owner_release, at the Git fast-forward step) already uses for a related mismatch.
+            previous_commit = str(saved_data_box.get("previous_commit") or "")
+            if saved_data_box.get("status") == "changed" and previous_commit:
+                acceptance_base = str(release.get("acceptance_base_commit") or "")
+                if acceptance_base and acceptance_base != previous_commit:
+                    raise ValueError(
+                        "the upgrade check was tested from a different version than the one currently accepted; "
+                        "the CTO needs to check the release record and arrange another review if needed"
+                    )
         if retry_response is None:
             response = {
                 "task": task,
@@ -19180,6 +19490,7 @@ def record_release_decision(root: Path, task: str, decision: str, reason: str = 
                 "reason": reason if decision == "not_accepted" else "",
                 "attachments": [],
                 "recorded_at": now(),
+                "saved_data_confirmed": saved_data_confirmed.strip() if decision == "accepted" else "",
             }
             if decision == "accepted":
                 response["upload"] = _new_upload(state, task, release, upload_destination)
@@ -20545,7 +20856,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reopen-candidate-scope"); p.add_argument("--agent", required=True); p.add_argument("--task", required=True); p.add_argument("--reason", required=True)
     p = sub.add_parser("declare-chunks"); p.add_argument("--agent", required=True); p.add_argument("--chunk", action="append", required=True, metavar="NAME:DESCRIPTION"); p.add_argument("--reason", default="")
     p = sub.add_parser("retire-chunk"); p.add_argument("--agent", required=True); p.add_argument("--chunk", required=True); p.add_argument("--reason", required=True); p.add_argument("--into", default="")
-    p = sub.add_parser("request-review"); p.add_argument("--agent", required=True); p.add_argument("--ledger", required=True); p.add_argument("--summary", required=True); p.add_argument("--unit-test-command", "--test-command", dest="test_command", required=True, help="unit-test command executed before acceptance scenarios and captured by the board; --test-command remains a compatibility alias"); p.add_argument("--phase", choices=["chunk", "subtask_acceptance", "final_acceptance"], default="chunk"); p.add_argument("--subtask", default=""); p.add_argument("--chunk", default=""); p.add_argument("--changes", default=""); p.add_argument("--test-scope", default="full", choices=sorted(TEST_SCOPES)); p.add_argument("--scope-reason", default=""); p.add_argument("--repair-package", default=""); p.add_argument("--difficulty", default="", help="optional: one line on what slowed you down (vague requirement, broken build, missing tool); never required")
+    p = sub.add_parser("request-review"); p.add_argument("--agent", required=True); p.add_argument("--ledger", required=True); p.add_argument("--summary", required=True); p.add_argument("--unit-test-command", "--test-command", dest="test_command", required=True, help="unit-test command executed before acceptance scenarios and captured by the board; --test-command remains a compatibility alias"); p.add_argument("--phase", choices=["chunk", "subtask_acceptance", "final_acceptance"], default="chunk"); p.add_argument("--subtask", default=""); p.add_argument("--chunk", default=""); p.add_argument("--changes", default=""); p.add_argument("--test-scope", default="full", choices=sorted(TEST_SCOPES)); p.add_argument("--scope-reason", default=""); p.add_argument("--repair-package", default=""); p.add_argument("--saved-data", dest="saved_data", default="", help="final acceptance only: one plain sentence describing what changes in the owner's saved data; omit when nothing does"); p.add_argument("--difficulty", default="", help="optional: one line on what slowed you down (vague requirement, broken build, missing tool); never required")
     p = sub.add_parser("claim-qa"); p.add_argument("--agent", required=True); p.add_argument("--request", default=""); p.add_argument("--challenge-ledger", default="")
     p = sub.add_parser("reserve-qa"); p.add_argument("--agent", required=True); p.add_argument("--request", default="")
     p = sub.add_parser("review-brief"); p.add_argument("--agent", required=True); p.add_argument("--request", required=True)
@@ -20703,7 +21014,7 @@ def main(argv: list[str] | None = None) -> int:
             chunks = [tuple(raw.split(":", 1)) if ":" in raw else ("", "") for raw in args.chunk]
             out = declare_chunks(root, args.agent, chunks, args.reason)
         elif args.command == "retire-chunk": out = retire_chunk(root, args.agent, args.chunk, args.reason, args.into)
-        elif args.command == "request-review": out = request_review(root, args.agent, args.ledger, args.summary, args.phase, args.chunk, args.changes, test_command=args.test_command, subtask=args.subtask, test_scope=args.test_scope, scope_reason=args.scope_reason, repair_package_id=args.repair_package)
+        elif args.command == "request-review": out = request_review(root, args.agent, args.ledger, args.summary, args.phase, args.chunk, args.changes, test_command=args.test_command, subtask=args.subtask, test_scope=args.test_scope, scope_reason=args.scope_reason, repair_package_id=args.repair_package, saved_data=args.saved_data)
         elif args.command == "claim-qa": out = claim_qa(root, args.agent, args.request, args.challenge_ledger)
         elif args.command == "reserve-qa": out = reserve_qa(root, args.agent, args.request)
         elif args.command == "review-brief": out = review_brief(root, args.request, args.agent)

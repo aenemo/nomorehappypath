@@ -600,6 +600,14 @@ PAGE = r'''<!doctype html>
               <li>Click <strong>Accepted</strong> only when the reviewed version works for you. Click <strong>Not accepted</strong> when something is wrong and write the reason in ordinary language.</li>
               <li>A local acceptance records the exact reviewed commit. Any remote push is a separate confirmation, unless you turned on upload on accept (below).</li>
             </ol>
+            <p><strong>When an update changes your saved data.</strong> If a task changes how your app keeps its data (its database, data files, uploads or settings files), the builder must say so and write <code>UPGRADING.md</code> in your project: what changes in your data, where your data is, how to back it up before you update, and how to go back if something goes wrong. Before you see the release, the reviewer from the other company tests this on a test copy: the version you accepted last saves some data, the new version is started on that same data and must still show it, then the backup is restored and the previous version must show the data exactly as it was.</p>
+            <ul class="help-list">
+              <li>The release card then shows a <strong>Saved data</strong> box above the buttons, with those four parts and the result of that test: kept and restored, failed, or not tested here (with the reason).</li>
+              <li><strong>Accepted</strong> stays greyed out until you tick <strong>I have made the backup described above</strong>, and the app asks once more before it records your Accept.</li>
+              <li>If your app's accepted version moved on after that test ran, Accept is refused and the CTO arranges another test.</li>
+              <li>A task that does not touch saved data looks the same as before: no box, nothing extra to do.</li>
+              <li>This protects the apps NoMoreHappyPath builds for you. It does not cover updating NoMoreHappyPath itself, which never touches your projects, boards or settings.</li>
+            </ul>
             <p><strong>Upload to GitHub when you accept (optional).</strong> On the Projects page, open the project's <strong>Advanced</strong> and click <strong>Folder and GitHub upload</strong>. Under <strong>GitHub (or other Git) repository to upload to</strong>, enter the repository address (for example <code>https://github.com/you/your-app.git</code> or <code>git@github.com:you/your-app.git</code>) and the <strong>Branch</strong>, then save. Leave both empty to turn it off.</p>
             <ul class="help-list">
               <li>From then on, each time you click <strong>Accepted</strong>, the approved version is uploaded to that branch with this computer's own git sign-in. Sign in to GitHub with git on this computer first; never put a password or token in the address.</li>

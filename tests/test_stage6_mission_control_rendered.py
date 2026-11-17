@@ -97,7 +97,7 @@ class Stage6Case(unittest.TestCase):
         profile = tempfile.TemporaryDirectory()
         self.addCleanup(profile.cleanup)
 
-        def slow_decision(root, task, decision, reason=""):
+        def slow_decision(root, task, decision, reason="", **_kwargs):   # the real call also passes saved_data_confirmed
             time.sleep(2.5)                         # the real answer waits for the merge into main
             record = {"task": task, "decision": decision, "recorded_at": board.now()}
             with board.locked_state(root) as state:

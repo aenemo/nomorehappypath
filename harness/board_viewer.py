@@ -699,6 +699,30 @@ function releaseResponseHtml(state,name){
 }
 // The card for an Accept that uploads by itself (the project has an upload destination). Plain words only; the saved git
 // output stays on the board for the CTO and is never shown. "Upload again" is the owner's only control.
+// Saved-data upgrade safety (owner 2026-11-16): a changed-data release shows this box above the Accept buttons, with
+// the plain result of the board's upgrade/go-back check and the four UPGRADING.md sections; Accept is disabled until
+// the owner ticks "I have made the backup", and submitAccepted() then sends the frozen snapshot's sha256 back so the
+// server can tie that one confirmation to this exact release (record_release_decision's saved_data_confirmed).
+function savedDataBoxHtml(info){
+  if(!info||info.status!=='changed')return'';
+  const resultLine={
+    passed:'Tested on a test copy, updating from the last version you accepted: your earlier data was kept, and going back to that version restored it.',
+    failed:`The test on a test copy FAILED: ${esc(info.reason||'the upgrade check did not pass')}. Accepting may damage your saved data.`,
+    not_run:`Not tested here: ${esc(info.reason||'the check could not run on this machine')}. Make the backup before you update.`,
+    first_version:'This is the first version, so there is nothing to update from.',
+    missing:`The update could not be tested because ${esc(info.reason||'required information')} were not provided. Make the backup yourself before you update.`,
+  }[info.result]||'Not tested here. Make the backup before you update.';
+  const sections=(info.upgrading_sections||[]).map(section=>`<div class="saved-data-section"><strong>${esc(section.heading)}</strong><p>${esc(section.body)}</p></div>`).join('');
+  return `<div class="saved-data-box" data-saved-data-box role="note"><strong>Saved data</strong><p>This update changes your saved data: ${esc(info.what||'')}.</p>${sections}<p class="saved-data-result">${resultLine}</p></div>`;
+}
+function savedDataConfirmHtml(info){
+  if(!info||info.status!=='changed')return'';
+  return `<label class="saved-data-confirm"><input type="checkbox" id="saved-data-confirm-checkbox" onchange="savedDataConfirmChanged(this)"> I have made the backup described above.</label>`;
+}
+function savedDataConfirmChanged(box){
+  const button=document.getElementById('accept-button');
+  if(button)button.disabled=!box.checked;
+}
 function uploadCardHtml(name,upload){
   const where=`${esc(upload.url)} (${esc(upload.branch)})`,task=esc(JSON.stringify(name));
   const last=(upload.attempts||[]).slice(-1)[0]||{};
@@ -744,7 +768,9 @@ function releaseResponseCore(state,name){
     return `<div class="release-response recorded" aria-live="polite"><strong>OWNER REJECTED / REPAIR REQUIRED</strong><div class="release-reason"><span>Reason</span><p>${reasonText}</p></div><p>Your explanation and ${files} are saved. Delivery will use them in a new repair, review, and release cycle.</p></div>`;
   }
   const task=esc(JSON.stringify(name));
-  return `<div class="release-response">${deliveredDocumentsHtml(name,'release')}${(state.task_kinds||{})[name]==='analysis'?analysisReportHtml(name):releasePreviewHtml(release)}${checkedInAdvanceHtml((state.requirement_confirmations||{})[name])}<h4>When you finish your test</h4>${ownerTestPlanHtml(release)}<p>Tell us whether you accept this release.</p><div class="actions"><button type="button" class="secondary" onclick="submitAccepted(${task})">Accepted</button><button type="button" onclick="openDecisionDialog(${task})">Not accepted</button></div></div>`;
+  const savedDataInfo=release?.saved_data;
+  const needsBackupConfirm=savedDataInfo?.status==='changed';
+  return `<div class="release-response">${deliveredDocumentsHtml(name,'release')}${(state.task_kinds||{})[name]==='analysis'?analysisReportHtml(name):releasePreviewHtml(release)}${checkedInAdvanceHtml((state.requirement_confirmations||{})[name])}<h4>When you finish your test</h4>${ownerTestPlanHtml(release)}${savedDataBoxHtml(savedDataInfo)}<p>Tell us whether you accept this release.</p>${savedDataConfirmHtml(savedDataInfo)}<div class="actions"><button type="button" class="secondary" id="accept-button" ${needsBackupConfirm?'disabled':''} onclick="submitAccepted(${task})">Accepted</button><button type="button" onclick="openDecisionDialog(${task})">Not accepted</button></div></div>`;
 }
 
 function taskLatestTimestamp(state,name){
@@ -1567,8 +1593,15 @@ async function submitAccepted(task){
   const retry=saved?.decision==='accepted'&&saved?.git_acceptance?.status==='failed';     // "Try Accept again": the saved Accept is retried exactly as before
   if(!retry&&(acceptedByOwner.has(task)||saved?.decision==='accepted')){el('#notice').textContent='This task is already accepted.';return;}
   if(testCopyRunning(lastBoard?.state||{},task)&&!window.confirm('The test copy of this release is still running on this computer (View app).\n\nIf a task is still running in the test copy, Accept will stop it: accepting closes the test copy.\n\nAccept anyway?'))return;
+  const savedDataInfo=((lastBoard?.state||{}).releases||{})[task]?.saved_data;
+  const payload={decision:'accepted'};
+  if(!retry&&savedDataInfo?.status==='changed'){
+    if(!document.getElementById('saved-data-confirm-checkbox')?.checked)return;   // the button is disabled until ticked; this guards a direct call too
+    if(!window.confirm('This update changes your saved data. Have you made the backup described above?'))return;
+    payload.saved_data_confirmed=savedDataInfo.sha256;
+  }
   if(retry){
-    try{await call('/api/releases/'+encodeURIComponent(task)+'/decision',{decision:'accepted'});el('#notice').textContent='Your response was saved with this release.';await refresh();}
+    try{await call('/api/releases/'+encodeURIComponent(task)+'/decision',payload);el('#notice').textContent='Your response was saved with this release.';await refresh();}
     catch(error){el('#notice').textContent='We could not save your response. '+(error?.message||'Please try again.');}
     return;
   }
@@ -1576,7 +1609,7 @@ async function submitAccepted(task){
   showAcceptedNow(task);                                  // at once: the buttons are gone and the card says it worked
   el('#notice').textContent='Accepted, thank you.';
   try{
-    const result=await call('/api/releases/'+encodeURIComponent(task)+'/decision',{decision:'accepted'});
+    const result=await call('/api/releases/'+encodeURIComponent(task)+'/decision',payload);
     acceptingNow.delete(task);
     const merged=result?.decision?.git_acceptance?.status;
     if(merged==='failed'||merged==='reintegration_required'){
@@ -5526,6 +5559,7 @@ def make_handler(root: Path, project_name: str = "", project_description: str = 
                         fields, attachments = parse_release_multipart(raw, content_type)
                         response = board.record_release_decision(
                             root, task, fields.get("decision", ""), fields.get("reason", ""),
+                            saved_data_confirmed=fields.get("saved_data_confirmed", ""),
                             **_upload_kwargs(settings_home, project_id))
                         upload_on_accept.wake(root)    # after the response is saved; a no-op when this Accept saved no upload
                         try:
@@ -5546,6 +5580,7 @@ def make_handler(root: Path, project_name: str = "", project_description: str = 
                     data = json.loads(raw or b"{}")
                     response = board.record_release_decision(
                         root, task, str(data.get("decision", "")), str(data.get("reason", "")),
+                        saved_data_confirmed=str(data.get("saved_data_confirmed", "")),
                         **_upload_kwargs(settings_home, project_id))
                     upload_on_accept.wake(root)        # after the response is saved; a no-op when this Accept saved no upload
                     self.send_json(201, {"decision": response}); return
