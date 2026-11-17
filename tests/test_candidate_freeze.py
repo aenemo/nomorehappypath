@@ -153,5 +153,101 @@ class ReopenScopeTests(FreezeFixture):
             )
 
 
+class ReopenReachesTheBuilderTests(FreezeFixture):
+    """2026-11-17: the CTO reopened a passed task; the builder that replaced the stopped one saw only "final review passed" and waited."""
+
+    REASON = "Spec 3.1 Accept refusal was left out, and the Linux tests must run for real on the final candidate."
+
+    def reopen(self):
+        self.seed_final("passed", completed_at="2026-08-20T10:00:00+00:00")
+        board.reopen_candidate_scope(self.root, self.cto["id"], "TASK-F", self.REASON)
+
+    def replacement(self):
+        with board.locked_state(self.root) as state:
+            state["agents"][self.developer["id"]]["active"] = False
+        session = control.create(self.root, "codex_delivery")
+        agent = board.register(self.root, "development", board.AWAITING_OWNER_DIRECTION, vendor="OpenAI", session_id=session["id"])
+        board.resume_task(self.root, agent["id"], self.developer["id"], "TASK-F")
+        return agent
+
+    def test_the_running_builder_and_a_later_replacement_both_read_the_work_owed(self):
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+        self.reopen()
+        owed = board.poll(self.root, self.developer["id"])["reopened_scope"]
+        self.assertEqual(owed["reason"], self.REASON)
+        self.assertIn("request the final review again", owed["what_to_do"])
+        replacement = self.replacement()  # registered after the reopen: its cursor starts past the reopen event
+        result = board.poll(self.root, replacement["id"])
+        self.assertNotIn("candidate_scope_reopened", [event.get("kind") for event in result["events"]])
+        self.assertEqual(result["reopened_scope"]["reason"], self.REASON)
+        # the task summary no longer tells it to wait for the CTO's release step
+        next_action = result["context_bundle"]["tasks"][0]["next_action"]
+        self.assertIn("Delivery does the work the CTO reopened", next_action)
+        self.assertNotIn("release verification", next_action)
+
+    def test_a_final_review_asked_for_after_the_reopen_settles_it(self):
+        self.reopen()
+        self.seed_final("open", completed_at="2099-01-01T00:00:00+00:00", request_id="review-final-02")
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+
+    def test_a_chunk_review_after_the_reopen_does_not_settle_it(self):
+        self.reopen()
+        with board.locked_state(self.root) as state:
+            state["qa_requests"]["review-chunk-02"] = {
+                "id": "review-chunk-02", "task": "TASK-F", "phase": "chunk", "status": "passed", "chunk": "c2", "cycle": 1,
+                "stage": "independent_review", "subtask": "", "developer_id": self.developer["id"], "claimed_by": None, "review_wait_started_at": "2099-01-01T00:00:00+00:00",
+                "requested_at": "2099-01-01T00:00:00+00:00", "completed_at": "2099-01-01T00:10:00+00:00"}
+        replacement = self.replacement()
+        self.assertEqual(board.poll(self.root, replacement["id"])["reopened_scope"]["reason"], self.REASON)
+
+    def test_a_final_review_trimmed_by_cleanup_still_settles_it(self):
+        # cleanup moves finished requests out of qa_requests into qa_request_index; the old reason must not come back
+        self.reopen()
+        with board.locked_state(self.root) as state:
+            state.setdefault("qa_request_index", {})["review-final-02"] = {
+                "id": "review-final-02", "task": "TASK-F", "phase": "final_acceptance", "status": "passed",
+                "requested_at": "2099-01-01T00:00:00+00:00", "completed_at": "2099-01-01T00:10:00+00:00"}
+        replacement = self.replacement()
+        self.assertNotIn("reopened_scope", board.poll(self.root, replacement["id"]))
+
+    def test_a_second_reopen_after_a_new_pass_carries_its_own_reason(self):
+        self.reopen()
+        with board.locked_state(self.root) as state:  # the first reopen, then a later final review that passed
+            state["candidate_scope_reopens"]["TASK-F"]["recorded_at"] = "2026-08-20T10:30:00+00:00"
+        self.seed_final("passed", completed_at="2026-08-21T10:00:00+00:00", request_id="review-final-02")
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+        second = "The deployed probe found the saved-data check still accepts a stale base commit."
+        board.reopen_candidate_scope(self.root, self.cto["id"], "TASK-F", second)
+        self.assertEqual(board.poll(self.root, self.developer["id"])["reopened_scope"]["reason"], second)
+
+    def test_an_engineering_builder_reads_it_too(self):
+        self.reopen()
+        with board.locked_state(self.root) as state:
+            state["agents"][self.developer["id"]]["active"] = False
+        session = control.create(self.root, "codex_delivery")
+        engineer = board.register(self.root, "engineering", board.AWAITING_OWNER_DIRECTION, vendor="OpenAI", session_id=session["id"])
+        board.resume_task(self.root, engineer["id"], self.developer["id"], "TASK-F")
+        self.assertEqual(board.poll(self.root, engineer["id"])["reopened_scope"]["reason"], self.REASON)
+
+    def test_nobody_else_and_no_settled_task_is_told(self):
+        self.reopen()
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.cto["id"]))
+        reviewer = board.register(self.root, "qa", "REVIEW_QUEUE", vendor="Anthropic", session_id=control.create(self.root, "claude_reviewer")["id"])
+        self.assertNotIn("reopened_scope", board.poll(self.root, reviewer["id"]))
+        with board.locked_state(self.root) as state:
+            state["candidate_scope_reopens"]["OTHER-TASK"] = state["candidate_scope_reopens"].pop("TASK-F")
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+        with board.locked_state(self.root) as state:
+            state["candidate_scope_reopens"]["TASK-F"] = state["candidate_scope_reopens"].pop("OTHER-TASK")
+            state.setdefault("git_acceptances", {})["TASK-F"] = {"task": "TASK-F"}
+        self.assertNotIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+        with board.locked_state(self.root) as state:
+            state["git_acceptances"].pop("TASK-F")
+        self.assertIn("reopened_scope", board.poll(self.root, self.developer["id"]))
+        board.cancel_task(self.root, "TASK-F")
+        with board.locked_state(self.root) as state:
+            self.assertIsNone(board._reopened_scope_owed(state, "TASK-F"))
+
+
 if __name__ == "__main__":
     unittest.main()

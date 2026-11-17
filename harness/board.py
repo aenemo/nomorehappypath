@@ -3647,6 +3647,8 @@ def _task_context_bundle(state: dict[str, Any], task: str) -> dict[str, Any]:
         next_action = "Owner visual acceptance is pending; agents remain in healthy standby."
     elif latest.get("status") == "failed":
         next_action = "Delivery repairs the recorded blocking result and submits the affected scope for re-review."
+    elif _reopened_scope_owed(state, task):
+        next_action = "Delivery does the work the CTO reopened after the final PASS (reopened_scope in the poll), commits it, then requests the final review again."
     elif latest.get("phase") == "final_acceptance" and latest.get("status") == "passed" and not release:
         next_action = "CTO completes claim-scope and release verification for the exact final PASS candidate."
     elif latest.get("status") in {"authoring", "open", "reserved", "claimed"}:
@@ -3790,6 +3792,9 @@ def poll(root: Path, agent_id: str) -> dict[str, Any]:
                     if e.get("task") == agent.get("task") and e.get("status") in {"recovery", "could_not_finish"} and e.get("who") != "reviewer"]
                 if recovery:
                     result["review_recovery"] = recovery   # the fresh attempt reads its brief here; a stopped scope says so
+                reopened = _reopened_scope_owed(state, str(agent.get("task") or ""))
+                if reopened:
+                    result["reopened_scope"] = reopened   # a replacement builder never saw the reopen event: the work owed is here
         else:
             result = None
     if rejection:
@@ -13874,6 +13879,26 @@ def _candidate_freeze_reason(state: dict[str, Any], task: str) -> str:
         "new commits require a failed product review, an owner rejection, or "
         "a CTO reopen-candidate-scope record."
     )
+
+
+def _reopened_scope_owed(state: dict[str, Any], task: str) -> dict[str, Any] | None:
+    """The CTO's reopen of this task's passed candidate while no review has been asked for since: the work Delivery owes.
+    2026-11-17: a replacement builder saw only "final review passed" and waited for release while the CTO waited for it."""
+    reopen = (state.get("candidate_scope_reopens") or {}).get(task) or {}
+    if not task or not reopen or task in (state.get("cancelled_tasks") or {}):
+        return None
+    if owner_accept_is_real(state, task) or task in (state.get("git_acceptances") or {}):
+        return None
+    since = str(reopen.get("recorded_at") or "")
+    # settled only by a final review asked for after the reopen; the durable history, because cleanup trims qa_requests
+    if any(request.get("phase") == "final_acceptance" and str(request.get("requested_at") or "") > since
+           for request in _task_requests(state, task)):
+        return None
+    return {
+        "task": task, "reason": str(reopen.get("reason") or ""), "cto_id": str(reopen.get("cto_id") or ""), "recorded_at": since,
+        "what_to_do": ("The CTO reopened this task after its final review passed. The reason above is work you owe now, before "
+                       "anything else: do it, commit it, then request the final review again. Do not wait for a release."),
+    }
 
 
 def reopen_candidate_scope(root: Path, agent_id: str, task: str, reason: str) -> dict[str, Any]:
