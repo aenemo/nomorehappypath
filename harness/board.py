@@ -3777,7 +3777,7 @@ def poll(root: Path, agent_id: str) -> dict[str, Any]:
                 repeated = _repeated_failures(state)
                 if repeated:
                     result["repeated_failures"] = repeated   # the CTO that keeps polling and posts nothing still sees it
-                escalations = review_rounds.poll_view(state.get("review_escalations") or {})
+                escalations = review_rounds.poll_view(_cto_review_escalations(state))
                 if escalations:
                     result["review_escalations"] = escalations   # past the round limit: the recovery or the honest outcome; never an owner question
                 gaps = _open_verification_gaps(state)
@@ -4152,9 +4152,17 @@ def _verification_gap_note(state: dict[str, Any] | None) -> str:
                      "attempt (a fresh Reviewer on a stronger model when the review itself could not be completed, otherwise a fresh Delivery attempt) and then records an honest could-not-finish outcome by itself.")
     more = f" (+{len(gaps) - len(shown)} more: your poll lists them all)" if len(gaps) > len(shown) else ""
     return " " + " ".join(lines) + more
+def _cto_review_escalations(state: dict[str, Any] | None) -> dict[str, Any]:
+    """The review-limit entries the CTO is still told about: not those of a cancelled task, nor those the owner gave up (Stop).
+    2026-11-16: a task cancelled on 11-08 kept "the owner has a red card" in every CTO message for eight days."""
+    cancelled = (state or {}).get("cancelled_tasks") or {}
+    return {key: entry for key, entry in ((state or {}).get("review_escalations") or {}).items()
+            if entry.get("task") not in cancelled and not entry.get("given_up_at")}
+
+
 def _review_escalation_note(state: dict[str, Any] | None) -> str:
     """What the CTO is told when a scope passed the round limit (2026-10-25). Nothing for the CTO to do but note it: the harness acts, the owner is never asked."""
-    items = review_rounds.poll_view((state or {}).get("review_escalations") or {})
+    items = review_rounds.poll_view(_cto_review_escalations(state))
     if not items:
         return ""
     lines = []
