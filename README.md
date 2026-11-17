@@ -578,6 +578,10 @@ limitation-of-liability terms apply (see LICENSE, sections 7 and 8). The license
 not the projects you build with it. [DISCLAIMER.md](DISCLAIMER.md) is an informational
 safety notice about what autonomous agents can do; it adds no conditions.
 
+## Thanks to our contributors
+
+- [@n-o-t-mugen](https://github.com/n-o-t-mugen) for per-agent colors: each role has its own color in Mission Control, adjustable in Settings (#96).
+
 ## License
 
 Open source under the **Apache License, Version 2.0** (see LICENSE). You may
