@@ -5510,7 +5510,14 @@ def _agent_skill_events(root: Path, agent: dict[str, Any]) -> list[dict[str, Any
     cli_session_id = str(session.get("cli_session_id") or "")
     if not provider or not cli_session_id:
         return None
-    return conversation.read_vendor_tool_events(provider, cli_session_id)
+    events = conversation.read_vendor_tool_events(provider, cli_session_id)
+    if events is None:
+        return None
+    # 2026-11-16 board freeze: classification compares every event with every library file on every board read. Only an
+    # event naming a library file's own file name can match it (_event_reads_skill_file), so the rest are dropped first.
+    names = {Path(str(skill.path)).name for skill in _usable_library_skills()}
+    return [event for event in events
+            if any(name in str(event.get("path") or "") or name in str(event.get("command") or "") for name in names)]
 
 
 def _skill_opening_lines(skill: Any) -> tuple[str, str]:
@@ -19839,7 +19846,10 @@ def snapshot(root: Path) -> dict[str, Any]:
     # Skills used (record-of-use-impl): recomputed fresh on every read from each
     # agent's own real session record, never carried in the saved state, since a
     # new tool call can change it between two polls without any board event.
-    tasks_with_agents = {str(agent.get("task")) for agent in projected.get("agents", {}).values() if agent.get("task")}
+    # The waiting designations (awaiting direction, review queue, CTO monitor) are not tasks and never have agreed skills;
+    # reading them made every poll re-read every archived agent's session file on that designation (2026-11-16 board freeze).
+    tasks_with_agents = {str(agent.get("task")) for agent in projected.get("agents", {}).values()
+                         if agent.get("task") and str(agent.get("task")) not in _CROSS_TASK_DESIGNATIONS}
     projected["task_skill_usage"] = {
         task: lines for task in tasks_with_agents for lines in [skill_usage_lines_for_task(root, task)] if lines
     }

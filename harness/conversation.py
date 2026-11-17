@@ -26,8 +26,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -818,25 +820,124 @@ def _codex_output(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok, "output": ""}
 
 
-def read_vendor_tool_events(provider: str, cli_session_id: str) -> list[dict[str, Any]] | None:
+def read_vendor_tool_events(provider: str, cli_session_id: str, *, wait: bool = False) -> list[dict[str, Any]] | None:
     """Return cli_session_id's real tool call/result events for provider, or
     None when there is no usable record: a vendor this does not cover
-    (Gemini is never given a skill), no file, or it cannot be read.
+    (Gemini is never given a skill), no file, it cannot be read, or it has
+    not been read yet.
 
     This is skill-library usage's one source of truth for what an agent
     really opened (SKILL_LIBRARY_SPEC.md section 3): never the agent's own
     report, and only a vendor whose own session store keeps full tool
     results, which Gemini's does not need to since it never gets a skill.
+
+    2026-11-16 board freeze: the board asks on every read, and a session file can be ~100 MB, so the answer never waits for
+    a parse. It is the last parse of this file (a copy), and a parse of a new or changed file is queued for one background
+    reader, at most once per _TOOL_EVENTS_REFRESH_SECONDS per file. `wait=True` parses in the caller instead (tests only).
+    Return: a list of event dicts, or None for "not known".
     """
     if provider not in {"claude", "codex"}:
         return None
     path = vendor_conversation_path(provider, cli_session_id)
     if path is None or not path.is_file():
         return None
+    name = str(path)
     try:
-        return read_claude_tool_events(path) if provider == "claude" else read_codex_tool_events(path)
+        key = _file_identity(path)
     except OSError:
         return None
+    with _TOOL_EVENTS_LOCK:
+        cached = _TOOL_EVENTS_CACHE.get(name)
+        if cached is not None:
+            _TOOL_EVENTS_CACHE.move_to_end(name)
+        due = (cached is None or cached[0] != key) and _monotonic() - _LAST_PARSED.get(name, float("-inf")) >= _TOOL_EVENTS_REFRESH_SECONDS
+        if due and not wait and name not in _IN_FLIGHT:
+            _PENDING[name] = provider
+            _start_reader()
+    if due and wait:
+        _parse_into_cache(name, provider)
+        with _TOOL_EVENTS_LOCK:
+            cached = _TOOL_EVENTS_CACHE.get(name)
+    return [dict(event) for event in cached[1]] if cached is not None else None
+
+
+def wait_for_tool_events(timeout: float = 10.0) -> bool:
+    """Block until the background reader has nothing queued or running (tests); True if it emptied within timeout seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _TOOL_EVENTS_LOCK:
+            if not _PENDING and not _IN_FLIGHT:
+                return True
+        time.sleep(0.01)
+    return False
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    """Return (inode, size, mtime_ns, ctime_ns) of path: changes when the file is appended to or replaced, even at the same size."""
+    status = path.stat()
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
+def _start_reader() -> None:
+    """Start the one background reader thread if none is running (caller holds _TOOL_EVENTS_LOCK)."""
+    global _READER
+    if _READER is None:
+        _READER = threading.Thread(target=_reader_loop, name="skills-used-reader", daemon=True)
+        _READER.start()
+
+
+def _reader_loop() -> None:
+    """Parse queued session files one at a time, outside the lock, and exit when the queue is empty."""
+    global _READER
+    while True:
+        with _TOOL_EVENTS_LOCK:
+            if not _PENDING:
+                _READER = None
+                return
+            name, provider = _PENDING.popitem(last=False)
+            _IN_FLIGHT.add(name)
+        try:
+            _parse_into_cache(name, provider)
+        except Exception:                                 # a damaged file must never stop the reader; it stays "not known"
+            pass
+        finally:
+            with _TOOL_EVENTS_LOCK:
+                _IN_FLIGHT.discard(name)
+
+
+def _parse_into_cache(name: str, provider: str) -> None:
+    """Parse one session file without holding the lock and store its events; an unreadable file stores nothing ("not known")."""
+    path = Path(name)
+    try:
+        key = _file_identity(path)
+    except OSError:
+        return
+    if not os.access(path, os.R_OK):
+        return
+    events = read_claude_tool_events(path) if provider == "claude" else read_codex_tool_events(path)
+    with _TOOL_EVENTS_LOCK:
+        _TOOL_EVENTS_CACHE[name] = (key, events)
+        _TOOL_EVENTS_CACHE.move_to_end(name)
+        while len(_TOOL_EVENTS_CACHE) > _TOOL_EVENTS_CACHE_FILES:
+            _TOOL_EVENTS_CACHE.popitem(last=False)      # least recently used session file goes first
+        _LAST_PARSED[name] = _monotonic()
+        _LAST_PARSED.move_to_end(name)
+        while len(_LAST_PARSED) > _LAST_PARSED_FILES:
+            _LAST_PARSED.popitem(last=False)
+
+
+# path -> (file identity at parse, events); at most _TOOL_EVENTS_CACHE_FILES files, least recently used dropped.
+_TOOL_EVENTS_CACHE: "OrderedDict[str, tuple[tuple[int, int, int, int], list[dict[str, Any]]]]" = OrderedDict()
+_TOOL_EVENTS_CACHE_FILES = 32           # more than a project's live and archived agents on its open tasks need at once
+# path -> monotonic time of its last parse: kept apart from the cache so an evicted file is still parsed at most once per window.
+_LAST_PARSED: "OrderedDict[str, float]" = OrderedDict()
+_LAST_PARSED_FILES = 4096               # a time per file, a few bytes each
+_TOOL_EVENTS_REFRESH_SECONDS = 30.0     # "Skills used" may lag a busy agent by up to this long
+_TOOL_EVENTS_LOCK = threading.Lock()    # held only for dictionary work, never during a parse
+_PENDING: "OrderedDict[str, str]" = OrderedDict()   # path -> provider, waiting for the background reader
+_IN_FLIGHT: set[str] = set()            # paths the background reader is parsing now
+_READER: threading.Thread | None = None
+_monotonic = time.monotonic             # tests replace it to move time
 
 
 def _clock(at: str) -> str:
