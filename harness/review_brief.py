@@ -374,6 +374,34 @@ def build(
                 "Code analysis: do NOT start the app. The deliverable is the report, so the walk is opening FINDINGS.md exactly as the owner "
                 "receives it, checking every finding against the code, and comparing the report with the confirmed requirements."
             )
+        saved_data_info = request.get("saved_data") or {}
+        if saved_data_info.get("rules"):
+            hint_paths = _bounded(list(saved_data_info.get("hint_paths") or []))
+            brief["final_stage"]["saved_data"] = {
+                "delivery_declared_changed": bool(saved_data_info.get("declared_changed")),
+                "delivery_description": _text(saved_data_info.get("description")),
+                "previous_version_state": _text(saved_data_info.get("previous_state")),
+                "previous_commit": _text(saved_data_info.get("previous_commit")),
+                "hint": hint_paths,
+                "instruction": (
+                    (
+                        "These paths look like they might change saved data (migration/schema location, or an added "
+                        "destructive SQL statement): " + ", ".join(hint_paths) + ". This is a hint only — it never "
+                        "decides the result; make your own call."
+                    ) if hint_paths else
+                    "No path looks like it changes saved data by name or added SQL. This is a hint only — make your own call."
+                ),
+                "required_verdict_line": (
+                    'Exactly one line starting "Saved data:" is required in your verdict summary, next to your '
+                    '"Security check:" line. One of: "Saved data: unchanged" (refused if Delivery declared a change, or '
+                    'if the hint above is non-empty and no reason is given after the dash); "Saved data: unchanged — '
+                    '<why the hinted files do not change saved data>"; "Saved data: changed — <what> — upgrade check '
+                    '<row id>: passed" (row must be a certified PASSED result of this review); "Saved data: changed — '
+                    '<what> — upgrade check: not run (<why>)"; "Saved data: changed — <what> — first version, nothing '
+                    'to upgrade" (only when previous_version_state above is "first"); or "Saved data: changed — <what> '
+                    '— upgrade check: missing <the missing parts>" (this verdict must be FAIL).'
+                ),
+            }
         if brief["risk_and_scope"]["owner_waived_deliverables"]:
             brief["final_stage"]["owner_waivers"] = (
                 "The owner waived the deliverables listed under risk_and_scope.owner_waived_deliverables "

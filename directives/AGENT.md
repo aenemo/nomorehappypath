@@ -374,6 +374,9 @@ carry on: no retry, no owner question. A missing, short or stale note is skipped
    Record the classification and a concise rationale with `define-plan`. Never
    create a chunk merely to satisfy process.
 
+**Saved data (owner, 2026-11-16).** When your task changes how the app keeps the owner's saved data, say so and hand in
+`UPGRADING.md` with its final-acceptance request. Open `saved-data`.
+
 ## scenario-ledger
 
 5. Implement the current atomic task, chunk, or product subtask. Run its narrow
@@ -486,6 +489,9 @@ and no rendered page is required, and a Challenge Ledger row needs no `screen-..
 (for example a browser the board refuses) is never a reason to hand the final review back: if the task has a screen, mark
 that step `Not run: <step and why>` in your verdict and pass the rest; if it has none, there is nothing missing. A Code analysis never starts the app: its final review opens FINDINGS.md as the owner receives it and checks the findings against the code.
 
+**Saved data (owner, 2026-11-16).** When a task changes the owner's saved data, add the upgrade/go-back row and your
+required `Saved data:` verdict line before judging TASK DONE. Open `saved-data`.
+
 **The end-to-end walk takes the time it takes (owner, 2026-10-07).** Walking a whole task from the start to the finished
 result can take twenty minutes or more. Your Bash tool allows a command up to two hours (the app sets that limit for
 you), so run the walk as one command with an explicit long `timeout` on that tool call, or as one background task of
@@ -493,6 +499,51 @@ the walk itself that you check with bounded commands and stop when it ends. That
 rule in chapter `board-protocol` is about. Never stop at ten minutes, never split the walk into separate pieces and call that the end-to-end
 test, and never report TASK DONE: YES for a path you did not run as one whole. If a limit truly stops you, say which one
 and write `Not run: <step and why>` in your verdict; it is not a STOP (chapter `not-tested`).
+
+## saved-data
+
+**Saved-data upgrade safety (owner, 2026-11-16, SAVED_DATA_UPGRADE_SAFETY.md sections 3-7).** When a task changes the owner's
+saved data (a database, data files, uploads, the app's own settings files, or records the app keeps in an outside service -
+code, tests, fixtures and documents are not saved data), the final review must prove the owner can both update to it and go
+back, with the owner's data intact either way.
+
+**Delivery.** Say in the hand-in `--summary` of every final-acceptance request, next to `Security:` and `Code quality:`,
+either `Saved data: unchanged` or `Saved data: changed — <one plain sentence: what changes>`. Omitting it defaults to
+unchanged (an older task, or one that never touches saved data, is never forced to add this line). When it changed, also
+hand in: the new version upgrading existing data by itself or with one documented command; the data's location made
+settable by one environment variable or argument per place, so a test can point both the old and the new version at the
+same test folder; and `UPGRADING.md` at the project root, replacing any earlier one, in plain words, with these four
+non-empty headings — `## What changes in your saved data`, `## Where your data is` (every place, and the variable or
+argument that points it elsewhere for a test), `## Before you update` (stop the app or copy safely while it runs; copy
+every place; which previous version to keep and how to get it back), `## If something goes wrong` (stop the new version,
+restore the backup everywhere, start the previous version; and that anything saved after the update is then lost). The
+board checks the four headings exist and are non-empty when a change is declared, and refuses the request naming a missing
+one. Never name or track a path called `.previous-version`: that name is reserved for the board's own export of the last
+accepted version into the Reviewer's disposable checkout.
+
+**Reviewer.** The board shows a hint (likely data-changing paths by name or an added destructive SQL line) in the final
+brief's `final_stage.saved_data`; it decides nothing - your own line does. Every final-acceptance verdict you create on a
+task the rules apply to needs exactly one line starting `Saved data:`, next to `Security check:`, one of: `Saved data:
+unchanged` (refused if Delivery declared a change, or if the hint is non-empty and you give no reason); `Saved data:
+unchanged — <why the hinted files do not change saved data>`; `Saved data: changed — <what> — upgrade check <row id>:
+passed` (that row must be a certified PASSED result of this exact review); `Saved data: changed — <what> — upgrade check
+<row id>: failed` (the verdict must be FAIL); `Saved data: changed — <what> — upgrade check: not run (<why>)` (a program,
+service or sign-in the old version needs is unavailable here, or an outside service cannot be pointed at a test copy -
+never blocks, never loops; drop an attached row that hit `CouldNotRun` with one `--correction-reason` and write this
+instead); `Saved data: changed — <what> — first version, nothing to upgrade` (only when the brief's
+`previous_version_state` is `first`); or `Saved data: changed — <what> — upgrade check: missing <the missing parts>` (the
+verdict must be FAIL; name what is missing, never invent a row). For a declared change with state `known`, add one
+Challenge Ledger row (an ordinary id, inside the usual per-chunk cap) whose command, in its own temporary folder with an
+explicit timeout: points every data place `UPGRADING.md` names (and `HOME`) at that folder; starts the previous
+version from the board's own `.previous-version/` export (already placed beside the candidate before you run
+`execute-challenge` - your own dependency install into the temporary folder), saves data through the owner's normal path
+or the project's own seed command, stops it; makes the backup exactly as `## Before you update` says and records a content
+snapshot (an export or the rows/files themselves, never a count); starts the candidate on that same data, checks the
+earlier data is still there and the owner's path works; then ALWAYS, in a `finally` whatever just happened (even a crash
+or a half-finished upgrade), stops every process it started, follows `## If something goes wrong`, starts the previous
+version again, and compares the data with the snapshot - this proves the go-back from the state a bad upgrade actually
+leaves, so no separate induced-failure fixture is needed; exits non-zero if the upgrade or the go-back failed. This check
+runs at final acceptance only, never at a chunk or subtask review.
 
 ## release
 
