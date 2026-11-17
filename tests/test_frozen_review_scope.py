@@ -508,6 +508,43 @@ class StoppedRecovery(Escalation):
         planned = self_heal.plan(self.root)
         self.assertFalse([a for a in planned if a["action"] in {"relaunch_ended", "relaunch", "restart"} and a.get("session_id") == session_id])
 
+    def cto_sees_review_limit(self):
+        cto = next((a for a in self.state()["agents"].values() if a.get("role") == "cto"), None) or board.register(self.root, "cto", "GLOBAL_MONITOR", vendor="Anthropic")
+        polled = board.poll(self.root, cto["id"])
+        return bool(polled.get("review_escalations")), "REVIEW LIMIT" in board._review_escalation_note(self.state())
+
+    def test_a_cancelled_task_no_longer_tells_the_cto_the_owner_has_a_red_card(self):
+        # 2026-11-16, the clone: finish-support-nmhp was cancelled on 11-08 and every CTO message still said "the owner has a red card"
+        self.fresh_attempt()
+        self.final_failure()
+        self.assertIn("the owner has a red card", board._review_escalation_note(self.state()))
+        self.assertEqual(self.cto_sees_review_limit(), (True, True))
+        board.cancel_task(self.root, self.entry()["task"])
+        self.assertEqual(self.cto_sees_review_limit(), (False, False))
+        self.assertEqual(board._review_escalation_note(self.state()), "")
+
+    def test_a_part_the_owner_stopped_no_longer_tells_the_cto_the_owner_has_a_red_card(self):
+        self.fresh_attempt()
+        self.final_failure()
+        card = next(a for a in self.owner_cards() if "Stop" in (a.get("choices") or []))
+        board.owner_action_choose(self.root, card["id"], "Stop")
+        self.assertTrue(self.entry().get("given_up_at"))
+        self.assertEqual(self.cto_sees_review_limit(), (False, False))
+
+    def test_only_cancelled_tasks_and_stopped_parts_drop_out_of_the_cto_view(self):
+        # plan check r1 item 5: mixed state; a stopped and an unresolved part of one task, a cancelled task, another active task
+        def entry(task, scope, **extra):
+            return {"task": task, "scope": scope, "status": "could_not_finish", "failed_judgments": 6, "open_ids": ["B2"], **extra}
+        state = {"cancelled_tasks": {"gone": {"cancelled_at": "2026-11-08T17:44:19+00:00"}},
+                 "review_escalations": {
+                     "alpha|stopped": entry("alpha", "stopped", given_up_at="2026-11-08T17:44:01+00:00"),
+                     "alpha|open": entry("alpha", "open"),
+                     "gone|final": entry("gone", "final"),
+                     "beta|final": entry("beta", "final")}}
+        self.assertEqual(sorted(board._cto_review_escalations(state)), ["alpha|open", "beta|final"])
+        note = board._review_escalation_note(state)
+        self.assertEqual((note.count("REVIEW LIMIT: alpha"), note.count("REVIEW LIMIT: beta"), "gone" in note), (1, 1, False))
+
     def test_the_session_of_a_stopped_recovery_is_stopped_by_the_planner(self):
         session_id = self.fresh_attempt()
         self.final_failure()
