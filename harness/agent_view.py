@@ -58,7 +58,13 @@ def open_view(root, session_id):
     if hasattr(host, 'capture_session') and getattr(host, 'uses_browser_view', lambda: True)():
         _call(host, 'capture_session', root, session_id)
         return {'mode': 'browser', 'session_id': session_id, 'poll_ms': max(250, min(5000, int(os.environ.get('HARNESS_AGENT_VIEW_POLL_MS', '500'))))}
-    return host.view_session(session, root=root)
+    result = host.view_session(session, root=root)
+    if isinstance(result, dict) and isinstance(result.get('window_color'), dict):
+        try:   # a reopened window: its row shows the colour this new window really took
+            control.record_window_color(root, session_id, result['window_color'])
+        except Exception:   # noqa: BLE001 - a colour note must never make View agent fail
+            pass
+    return result
 
 
 def capture(root, session_id):

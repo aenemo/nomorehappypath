@@ -70,7 +70,7 @@ class RenderedRoleColorChoice(unittest.TestCase):
             seen = reading["roles"][role]
             self.assertTrue(seen["visible"] and seen["inCard"], seen)
             self.assertEqual(seen["selected"], default, f"{role} starts on its default colour")
-            self.assertEqual(seen["label"], "Color in Mission Control")
+            self.assertEqual(seen["label"], "Color (its CLI window and Mission Control)")
             self.assertEqual(len(seen["options"]), len(labels))
             self.assertIn(f"{control.ROLE_COLOR_CHOICES[default]['label']} (default)", seen["options"])
         self.assertEqual(reading["roles"]["cto"]["swatch"], "rgb(139, 124, 246)", "the swatch shows the chosen colour")

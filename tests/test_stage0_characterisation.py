@@ -89,7 +89,7 @@ class SecondLauncherArgvTests(unittest.TestCase):
             script = argv[2]
             self.assertIn('tell application "Terminal"', script)
             self.assertIn("set background color to", script)
-            red, green, blue = control.SESSION_COLORS[session.get("color", "black")]["rgb"]
+            red, green, blue = control.terminal_color(session, None)["rgb"]   # no pick: the role's default Settings colour
             expected = "{" + ", ".join(str(round(c * 65535 / 255)) for c in (red, green, blue)) + "}"
             self.assertIn(expected, script)
 

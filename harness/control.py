@@ -186,16 +186,75 @@ SESSION_COLORS = {
 # Issue #92: the colour each role wears in Mission Control (its name, its row, its screen). `hex` draws bars and
 # borders; `ink` is the same colour dark enough for the role's name to keep 4.5:1 on white. Owners choose from this
 # list in Settings, so every choice stays readable.
+# `terminal` is the same colour dark enough to be the agent's CLI window background under light text (owner 2026-11-17:
+# "if i have multiple agents cli open i know by the color who is who").
 ROLE_COLOR_CHOICES = {
-    "teal": {"label": "Teal", "hex": "#14b8a6", "ink": "#0f766e"},
-    "coral": {"label": "Coral", "hex": "#f97361", "ink": "#b8392a"},
-    "purple": {"label": "Purple", "hex": "#8b7cf6", "ink": "#5b4bc4"},
-    "blue": {"label": "Blue", "hex": "#3b82f6", "ink": "#1d4ed8"},
-    "green": {"label": "Green", "hex": "#22c55e", "ink": "#15803d"},
-    "amber": {"label": "Amber", "hex": "#f59e0b", "ink": "#b45309"},
-    "pink": {"label": "Pink", "hex": "#ec4899", "ink": "#be185d"},
+    "teal": {"label": "Teal", "hex": "#14b8a6", "ink": "#0f766e", "terminal": "#0F3F3B"},
+    "coral": {"label": "Coral", "hex": "#f97361", "ink": "#b8392a", "terminal": "#5A2522"},
+    "purple": {"label": "Purple", "hex": "#8b7cf6", "ink": "#5b4bc4", "terminal": "#42275A"},
+    "blue": {"label": "Blue", "hex": "#3b82f6", "ink": "#1d4ed8", "terminal": "#123B5D"},
+    "green": {"label": "Green", "hex": "#22c55e", "ink": "#15803d", "terminal": "#164A35"},
+    "amber": {"label": "Amber", "hex": "#f59e0b", "ink": "#b45309", "terminal": "#5A4314"},
+    "pink": {"label": "Pink", "hex": "#ec4899", "ink": "#be185d", "terminal": "#5A1F3D"},
 }
 DEFAULT_ROLE_COLORS = {"delivery": "teal", "reviewer": "coral", "cto": "purple"}
+# A session's colour when the owner picked none for this one start: the window takes its role's Settings colour.
+SETTINGS_COLOR = "settings"
+SETTINGS_COLOR_LABEL = "Settings colour"
+
+
+def terminal_color(session: dict[str, Any], settings: dict[str, Any] | None) -> dict[str, Any]:
+    """The colour one agent's CLI window opens in, as {label, hex, rgb}.
+
+    Takes the session record and the global Settings document (None or a damaged one means the default role colours).
+    An explicit SESSION_COLORS choice for this one start wins; SETTINGS_COLOR (or no colour) means the role's Settings
+    colour, in its dark `terminal` shade; a session whose kind has no role opens standard black.
+    """
+    chosen = str(session.get("color") or SETTINGS_COLOR)
+    # Before 2026-11-17 every start without a pick stored "black", so an old "black" is not a choice: only a black the
+    # owner picked (color_chosen) stays black; any other stored colour could only come from the dialog and is kept.
+    if chosen in SESSION_COLORS and (chosen != "black" or session.get("color_chosen")):
+        return dict(SESSION_COLORS[chosen])
+    role = KIND_TO_ROLE.get(str(session.get("kind") or ""))
+    if role not in DEFAULT_ROLE_COLORS:
+        return dict(SESSION_COLORS["black"])
+    stored = settings.get("role_colors") if isinstance(settings, dict) else None
+    choice = ROLE_COLOR_CHOICES[validated_role_colors(stored, repair=True)[role]]
+    value = choice["terminal"]
+    return {"label": f"{SETTINGS_COLOR_LABEL} ({choice['label']})", "hex": value, "rgb": _rgb(value)}
+
+
+def _rgb(value: str) -> tuple[int, int, int]:
+    """'#RRGGBB' as a (red, green, blue) tuple of 0-255 ints."""
+    return (int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16))
+
+
+def session_window_color(session: dict[str, Any]) -> dict[str, Any]:
+    """The {label, hex, rgb} a reopened window of this session uses: the colour its window opened in (`window_color`),
+    else the colour terminal_color gives with the default role colours. Takes the session record."""
+    recorded = session.get("window_color") or {}
+    value = str(recorded.get("hex") or "") if isinstance(recorded, dict) else ""
+    if len(value) == 7 and value.startswith("#"):
+        try:
+            return {"label": str(recorded.get("label") or ""), "hex": value, "rgb": _rgb(value)}
+        except ValueError:
+            pass
+    return terminal_color(session, None)
+
+
+def session_window_rgb(session: dict[str, Any]) -> tuple[int, int, int]:
+    """The (r, g, b) of session_window_color(session). Takes the session record."""
+    return session_window_color(session)["rgb"]
+
+
+def record_window_color(root: Path, session_id: str, color: dict[str, Any]) -> None:
+    """Save on the session the colour its window just opened in ({label, hex}), so View agent and the agent row show
+    that window's real colour even after Settings change. Takes the project root, the session id and the colour; a
+    session that no longer exists is left alone."""
+    with locked_state(root) as state:
+        session = (state.get("sessions") or {}).get(session_id)
+        if session is not None:
+            session["window_color"] = {"label": str(color.get("label") or ""), "hex": str(color.get("hex") or "")}
 
 
 def validated_role_colors(value: Any, *, repair: bool = False) -> dict[str, str]:
@@ -922,7 +981,7 @@ def reviewer_retry_settings(settings: dict[str, dict[str, str]], reviewer_retry_
     return {**settings, "reviewer": {**settings["reviewer"], **recovery_launch_choice(settings, reviewer_retry_models, role="reviewer")}}
 
 
-def create(root: Path, kind: str, task: str = "", color: str = "black",
+def create(root: Path, kind: str, task: str = "", color: str = SETTINGS_COLOR,
            settings_override: dict[str, dict[str, str]] | None = None, continues: str = "",
            launch_choice: dict[str, Any] | None = None,
            availability: "Callable[[str], dict[str, Any]] | None" = None, fresh: bool = False,
@@ -935,11 +994,11 @@ def create(root: Path, kind: str, task: str = "", color: str = "black",
     if kind not in KINDS:
         raise ValueError("unknown session kind")
     task = task.strip()
-    color = str(color or "black").strip().lower()
+    color = str(color or SETTINGS_COLOR).strip().lower()   # no choice for this start: the role's Settings colour
     if task:
         raise ValueError("start an agent role only; give your direction later inside its CLI")
-    if color not in SESSION_COLORS:
-        raise ValueError("unknown terminal color; choose one of: " + ", ".join(SESSION_COLORS))
+    if color != SETTINGS_COLOR and color not in SESSION_COLORS:
+        raise ValueError("unknown terminal color; choose one of: " + ", ".join([SETTINGS_COLOR, *SESSION_COLORS]))
     role = role_for_kind(kind)
     if launch_choice is not None and role != "delivery":
         raise ValueError(LAUNCH_CHOICE_ROLE_SENTENCE)
@@ -1016,8 +1075,10 @@ def create(root: Path, kind: str, task: str = "", color: str = "black",
             "resume_launch_requested_at": None,
             "reason": "waiting for the Terminal session to attach",
             "color": color,
-            "color_hex": SESSION_COLORS[color]["hex"],
-            "color_label": SESSION_COLORS[color]["label"],
+            "color_chosen": color != SETTINGS_COLOR,   # the owner picked this colour for this start (black included)
+            # a Settings-colour session carries no hex: the window and the page resolve it from Settings (terminal_color)
+            "color_hex": SESSION_COLORS[color]["hex"] if color in SESSION_COLORS else "",
+            "color_label": SESSION_COLORS[color]["label"] if color in SESSION_COLORS else SETTINGS_COLOR_LABEL,
             "last_output_at": None, "output_bytes": 0, "last_status_request_at": None,
             "attention_since": None, "attention_reason": None,
             **_cli_memory_fields(),
@@ -1223,8 +1284,7 @@ def restore_missing_resume_session(
             "attached_at": None, "ended_at": None, "stop_requested_at": None,
             "pause_requested_at": None, "resume_launch_requested_at": None,
             "reason": "missing saved terminal transport reconstructed for project resume",
-            "color": "black", "color_hex": SESSION_COLORS["black"]["hex"],
-            "color_label": SESSION_COLORS["black"]["label"],
+            "color": SETTINGS_COLOR, "color_hex": "", "color_label": SETTINGS_COLOR_LABEL,
             "last_output_at": None, "output_bytes": 0, "last_status_request_at": None,
             "attention_since": None, "attention_reason": None,
             **memory,

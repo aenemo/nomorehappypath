@@ -873,7 +873,7 @@ process.stdout.write(JSON.stringify({rows:nodes.agents.children.map(row=>({html:
     def test_viewer_exposes_color_palette_and_cancel_black_fallback(self):
         html = board_viewer.rendered_page()
         self.assertIn("Choose terminal color", html)
-        self.assertIn("Cancel — use black", html)
+        self.assertIn("Cancel — use the Settings colour", html)
         self.assertIn("terminalColors", html)
         self.assertIn("showColorDialog('codex_delivery')", html)
 

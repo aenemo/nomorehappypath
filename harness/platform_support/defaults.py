@@ -811,6 +811,8 @@ class SessionSurface:
 
     session_id: str
     attach_hint: str = ""
+    # Whether the window took its colour: True/False when the terminal said so, None when no window was opened.
+    colored: bool | None = None
 
 
 # Private test walks set this to 1 in the app's environment: agents run in their screen sessions and
@@ -835,7 +837,10 @@ class _TerminalHost:
         """Build and return the AppleScript source that opens a new Terminal tab colored with color_rgb and
         titled with title."""
         rgb = self._colour_literal(color_rgb)
+        # The colour lines sit in their own `try`: a refused colour leaves a plain window that still opens, and the
+        # script returns "uncolored" so the owner's page never claims a colour the window does not have.
         return f'''on run argv
+ set colourResult to "colored"
  tell application "Terminal"
  activate
  set newTab to do script (item 1 of argv)
@@ -843,10 +848,15 @@ class _TerminalHost:
   try
    if "{title}" is not "" then set custom title to "{title}"
   end try
-  set background color to {rgb}
-  set normal text color to {{65535, 65535, 65535}}
+  try
+   set background color to {rgb}
+   set normal text color to {{65535, 65535, 65535}}
+  on error
+   set colourResult to "uncolored"
+  end try
  end tell
  end tell
+ return colourResult
 end run'''
 
     def open_session(self, session_id: str, argv, *, color_rgb) -> SessionSurface:
@@ -875,7 +885,7 @@ end run'''
                 # owner's Mac. View agent then shows the read-only screen in Mission Control (uses_browser_view) and opens no window.
                 return SessionSurface(session_id=session_id)
             try:
-                self._open_screen_view(directory, session_id, color_rgb)
+                colored = self._open_screen_view(directory, session_id, color_rgb)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
                 # The agent is already running. Failing the launch here made a running agent look like a
                 # failed start and invited a second one; the owner can open the window with View agent.
@@ -884,13 +894,13 @@ end run'''
                     session_id=session_id,
                     attach_hint='The agent is running, but its Terminal window could not be opened. Use View agent.',
                 )
-            return SessionSurface(session_id=session_id)
+            return SessionSurface(session_id=session_id, colored=colored)
         command = "exec " + shlex.join(list(argv))
-        subprocess.run(
+        opened = subprocess.run(
             ["/usr/bin/osascript", "-e", self._open_script(color_rgb, title), command],
             check=True, capture_output=True, text=True, timeout=60,
         )
-        return SessionSurface(session_id=session_id)
+        return SessionSurface(session_id=session_id, colored=(opened.stdout or "").strip() != "uncolored")
 
     @staticmethod
     def _screen_name(session_id):
@@ -934,7 +944,7 @@ end run'''
 
     def _open_screen_view(self, directory, session_id, color_rgb):
         """Open a Terminal window that reattaches to the screen session for session_id stored under directory,
-        colored with color_rgb; the effect is a new window, with no return value."""
+        colored with color_rgb; return True when the window took the colour, False when Terminal refused it."""
         title = window_title(session_id)
         # Not `exec screen -r`: when screen returns, the window runs harness/agent_window.py, which closes
         # THIS window (see that file). /bin/sh keeps the command independent of the owner's login shell.
@@ -945,8 +955,9 @@ end run'''
             '/bin/sh', '-c', script, 'nmhp-view', str(directory), self._live_screen_name(directory, session_id) or self._screen_name(session_id),
             sys.executable, str(helper), str(Path(directory).parent / 'terminal-close.log'), title,
         ])
-        subprocess.run(['/usr/bin/osascript', '-e', self._open_script(color_rgb, title), command],
-                       check=True, capture_output=True, text=True, timeout=30)
+        opened = subprocess.run(['/usr/bin/osascript', '-e', self._open_script(color_rgb, title), command],
+                                check=True, capture_output=True, text=True, timeout=30)
+        return (opened.stdout or '').strip() != 'uncolored'
 
     FOCUS_SCRIPT = r'''on run argv
  tell application "Terminal"
@@ -987,8 +998,11 @@ end run'''
                                          check=True, capture_output=True, text=True, timeout=30)
                 if focused.stdout.strip() != 'focused':
                     from harness import control
-                    color = control.SESSION_COLORS.get(session.get('color', 'black'), control.SESSION_COLORS['black'])
-                    self._open_screen_view(directory, session['id'], color['rgb'])
+                    color = control.session_window_color(session)   # its own window colour
+                    colored = self._open_screen_view(directory, session['id'], color['rgb'])
+                    # the new window's real colour, for the caller to record (agent_view.open_view)
+                    shown = color if colored is not False else {'label': 'Not coloured (the terminal refused the colour)', 'hex': ''}
+                    return {'mode': 'native', 'session_id': session['id'], 'window_color': {'label': shown['label'], 'hex': shown['hex']}}
                 return {'mode': 'native', 'session_id': session['id']}
         terminal_tty = session.get("terminal_tty", "")
         if not terminal_tty and session.get("pid"):
