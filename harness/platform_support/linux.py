@@ -383,11 +383,11 @@ class _TmuxTerminalHost:
             subprocess.run(command, check=True, capture_output=True, text=True)
         # Role colour, same table that drives macOS, so a role looks like itself
         # on both platforms. A tmux too old for this must not fail the launch.
-        subprocess.run(
+        coloured = subprocess.run(
             ["tmux", "select-pane", "-t", f"{name}.0", "-P", f"bg={self._colour(color_rgb)}"],
             check=False, capture_output=True, text=True,
         )
-        return SessionSurface(session_id=session_id, attach_hint=self.attach_command(session_id))
+        return SessionSurface(session_id=session_id, attach_hint=self.attach_command(session_id), colored=coloured.returncode == 0)
 
     # tmux closes a session the moment its command exits, taking any refusal the
     # command printed with it: the owner saw "it crashed, no window". A command

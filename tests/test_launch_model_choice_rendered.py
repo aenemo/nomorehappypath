@@ -180,7 +180,7 @@ class LaunchChoiceDialogRenderedTests(unittest.TestCase):
         self.assertEqual(reading["geminiModels"], list(control.PROVIDER_MODELS["gemini"]) + ["__custom__"], dump)
         self.assertIn("Not tested with this model and effort. To test it, open Settings.", pre["note"], dump)
         self.assertNotIn("Press Test", pre["note"], dump)
-        self.assertEqual(pre["cancel"], "Cancel — use Settings and black", dump)
+        self.assertEqual(pre["cancel"], "Cancel — use Settings", dump)
         self.assertTrue(pre["closeVisible"], dump)
         self.assertIn("page=settings", pre["settingsLink"], dump)
         self.assertFalse(pre["overflowX"], dump)
@@ -193,7 +193,7 @@ class LaunchChoiceDialogRenderedTests(unittest.TestCase):
         self.assertEqual(reading["reopened"], {"provider": "codex", "model": "gpt-6-sol", "effort": "high"}, "a reopened dialog starts from Settings: " + dump)
         self.assertEqual(reading["reopenedAfterClose"], {"provider": "codex", "model": "gpt-6-sol", "effort": "high"}, "an edit before Close is gone: " + dump)
         self.assertIn("CODEX Delivery Agent launch requested with gpt-6-sol at high effort", reading["untouchedLaunchNotice"], dump)
-        self.assertIn("CODEX Delivery Agent launch requested with gpt-6-sol at high effort with Standard black terminal", reading["cancelNotice"], dump)
+        self.assertIn("CODEX Delivery Agent launch requested with gpt-6-sol at high effort with Settings colour (Teal) terminal", reading["cancelNotice"], dump)
         self.assertEqual([(s["provider"], s["model"], s["effort"], s["launch_choice"]) for s in reading["launched"]],
                          [("gemini", "gemini-3.8-flash-low", "low", True), ("codex", "gpt-6-sol", "high", True), ("codex", "gpt-6-sol", "high", False)], dump)
         self.assertEqual(global_settings._path(self.home).read_bytes(), self.settings_bytes, "the dialog and two launches wrote nothing to Settings")

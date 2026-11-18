@@ -372,13 +372,15 @@ def launch_terminal(root, session: dict, bootstrap_socket: str, *, manager_home=
         arguments += ["--manager-home", str(manager_home)]
     if auth_socket:
         arguments += ["--claude-auth-bootstrap", auth_socket]
-    color = control.SESSION_COLORS.get(session.get("color", "black"), control.SESSION_COLORS["black"])
+    color = board_viewer.window_color(session, manager_home)   # the role's Settings colour unless this start chose one
     try:
         # Returned for the same reason as the viewer's: on Linux this is the
         # only way the owner learns how to reach the session.
-        return platform_support.terminal_host().open_session(
+        surface = platform_support.terminal_host().open_session(
             session["id"], arguments, color_rgb=color["rgb"],
         )
+        board_viewer.note_window_color(root, session["id"], color, surface)
+        return surface
     except platform_support.UnsupportedPlatformOperation as error:
         # Surface the PLATFORM'S OWN refusal. This used to hardcode the macOS
         # wording, so a Linux owner whose only problem was a missing tmux was

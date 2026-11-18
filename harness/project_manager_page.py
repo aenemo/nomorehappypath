@@ -651,7 +651,7 @@ PAGE = r'''<!doctype html>
               <tbody>
                 <tr><td>Open Mission Control</td><td>Opens the live board for the selected project.</td></tr>
                 <tr><td>Pause project</td><td>Stops active work after board writes finish and preserves tasks, reviews, and evidence.</td></tr>
-                <tr><td>CODEX CLI - Delivery Agent</td><td>Opens <strong>Start a Delivery Agent</strong>: choose the kind of work (Write code, Analyze code or Write specs), then the provider, model and reasoning effort for this launch, then a terminal color. It starts or attaches the implementation agent for owner direction, planning, coding, and Delivery evidence.</td></tr>
+                <tr><td>CODEX CLI - Delivery Agent</td><td>Opens <strong>Start a Delivery Agent</strong>: choose the kind of work (Write code, Analyze code or Write specs), then the provider, model and reasoning effort for this launch, then a terminal color (it starts on the agent's colour from Settings). It starts or attaches the implementation agent for owner direction, planning, coding, and Delivery evidence.</td></tr>
                 <tr><td>CLAUDE CLI - Reviewer</td><td>Starts or attaches the independent reviewer. It tests the finished work with its own checks instead of repeating Delivery's.</td></tr>
                 <tr><td>CTO</td><td>Starts or attaches the monitoring role that keeps tasks routed, watches release gates, and reports owner action.</td></tr>
                 <tr><td>View status</td><td>Shows the selected agent's current task, stage, last update, next step, and whether you need to act.</td></tr>
@@ -1382,7 +1382,7 @@ PAGE = r'''<!doctype html>
           <div class="field"><label for="model-${role.id}">Model</label><select id="model-${role.id}" data-setting-model-choice="${role.id}">${modelOptions(selected.provider, selected.model)}</select></div>
           <div class="field" data-setting-custom="${role.id}"${(value.provider_models?.[selected.provider] || []).includes(selected.model) ? ' hidden' : ''}><label for="custom-model-${role.id}">Custom model ID</label><input id="custom-model-${role.id}" data-setting-model="${role.id}" value="${(value.provider_models?.[selected.provider] || []).includes(selected.model) ? '' : esc(selected.model || '')}" autocomplete="off" placeholder="Provider model ID"></div>
           <div class="field"><label for="effort-${role.id}">Effort</label><select id="effort-${role.id}" data-setting-effort="${role.id}">${effortOptions(selected.provider, selected.effort)}</select></div>
-          <div class="field"><label for="color-${role.id}"><i class="role-color-swatch" data-setting-color-swatch="${role.id}" aria-hidden="true"></i>Color in Mission Control</label><select id="color-${role.id}" data-setting-color="${role.id}">${colorOptions(role.id)}</select></div>
+          <div class="field"><label for="color-${role.id}"><i class="role-color-swatch" data-setting-color-swatch="${role.id}" aria-hidden="true"></i>Color (its CLI window and Mission Control)</label><select id="color-${role.id}" data-setting-color="${role.id}">${colorOptions(role.id)}</select></div>
           <button class="button secondary" type="button" data-settings-test="${role.id}">Test ${esc(value.providers?.[selected.provider]?.short || 'the')} connection</button>
           <div class="connection-result ${resultClass}" data-settings-result="${role.id}" role="status" aria-live="polite">${esc(resultText)}</div>
           <p class="settings-card-copy settings-switch" data-settings-switch="${role.id}" role="status" hidden></p>

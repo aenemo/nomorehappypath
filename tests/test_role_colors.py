@@ -36,9 +36,9 @@ class RoleColors(unittest.TestCase):
         self.assertEqual(set(control.DEFAULT_ROLE_COLORS), set(control.ROLE_SETTINGS), "one colour for each role Settings lists")
         self.assertEqual(global_settings.initialize(self.home)["role_colors"], control.DEFAULT_ROLE_COLORS)
         self.assertEqual(board_viewer.role_color_view(None), {
-            "builder": {"hex": "#14b8a6", "ink": "#0f766e"},
-            "reviewer": {"hex": "#f97361", "ink": "#b8392a"},
-            "cto": {"hex": "#8b7cf6", "ink": "#5b4bc4"},
+            "builder": {"hex": "#14b8a6", "ink": "#0f766e", "terminal": "#0F3F3B", "label": "Teal"},
+            "reviewer": {"hex": "#f97361", "ink": "#b8392a", "terminal": "#5A2522", "label": "Coral"},
+            "cto": {"hex": "#8b7cf6", "ink": "#5b4bc4", "terminal": "#42275A", "label": "Purple"},
         }, "Mission Control's colours before Settings had a choice")
 
     def test_every_color_on_offer_keeps_the_name_readable(self):
@@ -50,7 +50,7 @@ class RoleColors(unittest.TestCase):
         self.assertEqual(global_settings.load(self.home)["role_colors"], {"delivery": "green", "reviewer": "coral", "cto": "blue"})
         self.assertEqual(saved["agent_settings"], global_settings.load(self.home)["agent_settings"], "the AI choices are saved as before")
         view = board_viewer.role_color_view(global_settings.load(self.home))
-        self.assertEqual(view["builder"], {key: control.ROLE_COLOR_CHOICES["green"][key] for key in ("hex", "ink")})
+        self.assertEqual(view["builder"], {key: control.ROLE_COLOR_CHOICES["green"][key] for key in ("hex", "ink", "terminal", "label")})
         self.assertEqual(view["cto"]["hex"], control.ROLE_COLOR_CHOICES["blue"]["hex"])
         self.assertEqual(view["reviewer"]["hex"], control.ROLE_COLOR_CHOICES["coral"]["hex"])
         global_settings.update_agent_settings(self.home, old_settings())

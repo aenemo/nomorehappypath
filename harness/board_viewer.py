@@ -207,7 +207,7 @@ PAGE = r"""<!doctype html>
 </div>
 <div class="mc-panel" id="tab-advanced" role="tabpanel" aria-labelledby="tab-advanced-btn" hidden>
 <section class="panel mc-advanced-intro" style="margin-top:18px"><h2>Advanced</h2><p>Everything for running the agents by hand: start and stop them, give direction, see every terminal and the review queue, and where this project’s AI access lives. Nothing here is needed for a normal task.</p></section>
-<section class="panel launch"><div><h2>Start visible work</h2><p>Open a role now. Give Delivery direction through its safe composer; its Product Manager designs the objective and plan. The Delivery button first asks what kind of work this is (Write code, Analyze code or Write specs), then lets you pick the provider, model and effort for this launch only (pre-filled from Settings); choose a terminal color to identify it; Cancel uses Settings' values and standard black.</p></div><div class="actions"><button id="codex">CODEX CLI · Delivery Agent</button><button class="secondary" id="claude">CLAUDE CLI · Reviewer</button><button class="secondary" id="cto">CTO (CLAUDE)</button><button class="stop" id="stop-all" disabled>Stop all agents</button><button class="secondary" id="relaunch-preserved" hidden>Relaunch preserved agents</button></div><div class="direction-start" id="direction-start"><button type="button" class="secondary" id="give-direction" title="Write what you want built. Delivery, the Independent Reviewer and the CTO start by themselves and Delivery receives it.">Give direction (starts the agents)</button><p class="launch-choice-note" id="direction-start-note" role="status" aria-live="polite" hidden></p><button type="button" class="secondary" id="direction-discard" hidden disabled title="Nothing is saved to discard. When you save a direction (also while the project is paused) this forgets it; nothing has been sent.">Discard the saved direction</button></div></section>
+<section class="panel launch"><div><h2>Start visible work</h2><p>Open a role now. Give Delivery direction through its safe composer; its Product Manager designs the objective and plan. The Delivery button first asks what kind of work this is (Write code, Analyze code or Write specs), then lets you pick the provider, model and effort for this launch only (pre-filled from Settings); each agent's window opens in its colour from Settings so you can tell them apart, or pick another for this start; Cancel uses Settings' values and colour.</p></div><div class="actions"><button id="codex">CODEX CLI · Delivery Agent</button><button class="secondary" id="claude">CLAUDE CLI · Reviewer</button><button class="secondary" id="cto">CTO (CLAUDE)</button><button class="stop" id="stop-all" disabled>Stop all agents</button><button class="secondary" id="relaunch-preserved" hidden>Relaunch preserved agents</button></div><div class="direction-start" id="direction-start"><button type="button" class="secondary" id="give-direction" title="Write what you want built. Delivery, the Independent Reviewer and the CTO start by themselves and Delivery receives it.">Give direction (starts the agents)</button><p class="launch-choice-note" id="direction-start-note" role="status" aria-live="polite" hidden></p><button type="button" class="secondary" id="direction-discard" hidden disabled title="Nothing is saved to discard. When you save a direction (also while the project is paused) this forgets it; nothing has been sent.">Discard the saved direction</button></div></section>
 <section class="panel settings-panel"><details class="settings-details" id="access-details"><summary><span><strong>AI access for this project</strong></span><span class="summary-end"><span class="history-count">Where this project’s provider permissions live</span><i class="summary-caret" aria-hidden="true"></i></span></summary><div id="access-notice" class="notice" role="status" aria-live="polite"></div><div class="settings-provider"><strong>Claude — project permissions file</strong><code id="access-claude-path">Loading…</code><div>Applies only to this project folder. Bypass mode retains the deny guardrails for destructive commands and force-pushes.</div></div><div class="settings-provider"><strong>Codex — project trust entry</strong><code id="access-codex-path">Loading…</code><div>The global file carries one trust entry per project — this project’s is shown. Approval and sandbox access are passed per launch to this project’s agents and are never written globally, so they cannot leak into other projects or your own codex sessions.</div></div><div class="settings-provider"><strong>Gemini — operating-system write limits</strong><code>No project file</code><div>Gemini’s agents run inside the same operating-system write limit as the others: they can write this project’s folders and Gemini’s own sign-in folder, nothing else. Your own Gemini settings and controls (~/.gemini/config and settings.json) cannot be changed by an agent. Gemini uses your Google subscription sign-in; nothing is written for it when a project opens.</div></div><p class="history-intro">Access is configured automatically every time this project opens — nothing to click. This panel only shows where it lives.</p></details></section>
 <section class="panel settings-panel"><details class="settings-details" id="skill-library-details"><summary><span><strong>Skill library</strong></span><span class="summary-end"><span class="history-count">Shared written guides your builder and reviewer can use</span><i class="summary-caret" aria-hidden="true"></i></span></summary><div id="skill-library-notice" class="notice" role="status" aria-live="polite"></div><label><input type="checkbox" id="skill-library-switch" checked> Use the skill library</label><p class="history-intro">Twelve written guides (screens, server code, data, security, payments, testing, deployment and more) live inside NMHP itself. For each task your builder proposes which ones it needs, with a reason; you tick the ones you agree with on that task's Go ahead card, and only those are given to the agents, by Claude or Codex, for that whole task. A guide steers the work; it does not guarantee the result. Task details show, per agent, what was really opened: a guide it read in full, one it opened without agreeing to first (opened, not agreed), one whose file could not be read, or one the record simply does not know about (not known). A builder on Gemini gets no block at all for that task (Skills: not available, the builder runs on Gemini); a Claude or Codex builder with a Gemini reviewer still gets its list, and Skills used says "Reviewer: not available for Gemini." The CTO is never given a guide. Turning this off removes the block from the next task you propose; a task you already agreed to keeps its list to the end.</p></details></section>
 <section id="attention" class="panel section" aria-live="polite"></section>
@@ -219,7 +219,7 @@ PAGE = r"""<!doctype html>
 <dialog id="wish-add-dialog" aria-labelledby="wish-add-title"><form class="modal" id="wish-add-form"><h2 id="wish-add-title">Add to wish list</h2><p id="wish-add-help">Write the wish in your own words. Add a document or a screenshot if that helps explain it. Nothing is sent until you press Add.</p><label for="wish-title-input"><strong>Title</strong></label><input id="wish-title-input" type="text" maxlength="80" required placeholder="A short title shown in the list (up to 80 characters)"><small id="wish-title-count">0 of 80 characters used.</small><label for="wish-add-text"><strong>What do you wish this project had?</strong></label><textarea id="wish-add-text" rows="6" required placeholder="Type a wish…"></textarea><small id="wish-add-count">0 of 20,000 characters used.</small><div id="wish-existing-attachments" hidden><strong>Already attached</strong><ul id="wish-existing-attachments-list"></ul></div><label for="wish-add-attachments" id="wish-add-attachments-label"><strong>Supporting documents or screenshots</strong></label><input id="wish-add-attachments" type="file" multiple accept=".pdf,.md,.txt,.rtf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,text/markdown"><small id="wish-add-attachments-help">Up to 5 files total, 10 MB each. Choosing files again adds to this list rather than replacing it. Nothing is sent until you press Add.</small><ul id="wish-pending-attachments-list"></ul><p id="wish-error" class="notice" role="alert" aria-live="polite"></p><div class="modal-actions"><button type="button" class="secondary" id="wish-add-cancel">Cancel</button><button type="submit" id="wish-add-button">Add to wish list</button></div></form></dialog>
 </div>
 <dialog id="status-dialog" aria-labelledby="status-dialog-title"><div class="modal"><h2 id="status-dialog-title" tabindex="-1">Agent status</h2><div id="status-dialog-body"></div><div class="modal-actions"><button class="secondary" id="status-dialog-close">Close</button></div></div></dialog>
-<dialog id="color-dialog" aria-labelledby="color-dialog-title"><form class="modal" id="color-form"><h2 id="color-dialog-title">Choose terminal color</h2><div id="launch-choice" hidden><fieldset class="task-kind-choice" id="launch-task-kind"><legend><strong>What kind of work is this?</strong></legend><label><input type="radio" name="launch-task-kind" value="development" checked> <strong>Write code</strong> — build or change code. Full process: tests first, independent review, end to end.</label><label><input type="radio" name="launch-task-kind" value="analysis"> <strong>Analyze code</strong> — read the code and report issues and refactoring ideas. Changes no code; the reviewer checks every finding.</label><label><input type="radio" name="launch-task-kind" value="spec"> <strong>Write specs</strong> — a spec, a deck or text. No code to build or examine.</label></fieldset><p class="launch-choice-origin" id="launch-choice-origin">Loading Settings…</p><div class="launch-choice"><label>Provider<select id="launch-provider" disabled></select></label><label>Model<select id="launch-model-select" disabled></select><input id="launch-model" placeholder="type a model id" autocomplete="off" hidden disabled></label><label>Reasoning effort<select id="launch-effort" disabled></select></label></div><p class="launch-choice-note" id="launch-choice-note"></p></div><p id="color-dialog-copy">This color identifies this CLI window in Mission Control. Cancel launches with the standard black background.</p><div id="color-options" class="color-options"></div><div class="modal-actions"><button type="button" class="secondary" id="color-close">Close</button><button type="button" class="secondary" id="color-cancel">Cancel — use black</button><button type="submit" id="color-launch">Launch selected color</button></div><p class="modal-links"><a id="launch-settings-link" href="#" hidden>Open Settings</a></p></form></dialog>
+<dialog id="color-dialog" aria-labelledby="color-dialog-title"><form class="modal" id="color-form"><h2 id="color-dialog-title">Choose terminal color</h2><div id="launch-choice" hidden><fieldset class="task-kind-choice" id="launch-task-kind"><legend><strong>What kind of work is this?</strong></legend><label><input type="radio" name="launch-task-kind" value="development" checked> <strong>Write code</strong> — build or change code. Full process: tests first, independent review, end to end.</label><label><input type="radio" name="launch-task-kind" value="analysis"> <strong>Analyze code</strong> — read the code and report issues and refactoring ideas. Changes no code; the reviewer checks every finding.</label><label><input type="radio" name="launch-task-kind" value="spec"> <strong>Write specs</strong> — a spec, a deck or text. No code to build or examine.</label></fieldset><p class="launch-choice-origin" id="launch-choice-origin">Loading Settings…</p><div class="launch-choice"><label>Provider<select id="launch-provider" disabled></select></label><label>Model<select id="launch-model-select" disabled></select><input id="launch-model" placeholder="type a model id" autocomplete="off" hidden disabled></label><label>Reasoning effort<select id="launch-effort" disabled></select></label></div><p class="launch-choice-note" id="launch-choice-note"></p></div><p id="color-dialog-copy">This colour identifies this CLI window. It starts on this agent's colour from Settings; pick another for this start only. Cancel uses the Settings colour.</p><div id="color-options" class="color-options"></div><div class="modal-actions"><button type="button" class="secondary" id="color-close">Close</button><button type="button" class="secondary" id="color-cancel">Cancel — use the Settings colour</button><button type="submit" id="color-launch">Launch selected color</button></div><p class="modal-links"><a id="launch-settings-link" href="#" hidden>Open Settings</a></p></form></dialog>
 <dialog id="decision-dialog" aria-labelledby="decision-dialog-title"><form class="modal" id="decision-form"><h2 id="decision-dialog-title">Tell us what needs changing</h2><p>Explain why you did not accept this release. Your explanation is saved with the release record and sent to Delivery.</p><label for="decision-reason"><strong>What should be changed?</strong></label><textarea id="decision-reason" rows="9" required placeholder="Add as much detail as you need."></textarea><label for="decision-attachments"><strong>Documents or screenshots</strong></label><input id="decision-attachments" type="file" multiple accept=".pdf,.md,.txt,.rtf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,text/markdown"><small>Up to 5 files, 10 MB each. Files are stored safely and are not displayed as web pages.</small><p id="decision-error" class="notice" role="alert" aria-live="polite"></p><div class="modal-actions"><button type="button" class="secondary" id="decision-cancel">Cancel</button><button type="submit" id="decision-submit">Send response</button></div></form></dialog>
 <dialog id="push-dialog" aria-labelledby="push-dialog-title"><form class="modal" id="push-form"><h2 id="push-dialog-title">Push the accepted commit</h2><p id="push-help">This is separate from accepting the local release. Choose an existing approved remote and branch. Nothing contacts the remote until you confirm in the next step.</p><label for="push-remote"><strong>Configured remote</strong></label><input id="push-remote" value="origin" required><label for="push-branch"><strong>Branch</strong></label><input id="push-branch" value="main" required><p id="push-error" class="notice" role="alert" aria-live="polite"></p><div class="modal-actions"><button type="button" class="secondary" id="push-cancel">Cancel</button><button type="submit" id="push-submit">Record push instruction</button></div></form></dialog>
 <dialog id="owner-message-dialog" aria-labelledby="owner-message-title"><form class="modal" id="owner-message-form"><h2 id="owner-message-title">Give direction</h2><p id="owner-message-help">This message is sent as one complete instruction to Delivery. Pressing Enter starts a new line; it does not send the message. Use the Send button when you are ready.</p><div id="owner-message-kind-choice" hidden></div><p id="owner-message-task-kind" class="task-kind-note" hidden></p><label id="owner-message-split" class="task-kind-note" hidden><input type="checkbox" id="owner-message-allow-split"> Allow Delivery to split this task into parts that are each reviewed on their own. Leave it off for one build and one review.</label><label id="owner-message-support-plan" class="task-kind-note" hidden><input type="checkbox" id="owner-message-support-plan-check"> This app gets Support. Delivery writes <code>SUPPORT_PLAN.md</code> into the build and makes the app send its version and an <code>nmhp.support.check</code> event, so a dedicated Support installation can watch it.</label><label for="owner-message-text"><strong>What should Delivery do?</strong></label><textarea id="owner-message-text" rows="12" required placeholder="Write the full direction or clarification here…"></textarea><small id="owner-message-count">0 of 20,000 units used. Some characters use more than one unit. Your message has a size limit; if it is too long you will be told before it is sent.</small><div class="directive-file-panel"><label for="owner-message-directive-file"><strong>Or use a .md or .txt file as the complete message</strong></label><input id="owner-message-directive-file" type="file" accept=".md,.txt,text/markdown,text/plain"><small id="owner-message-file-status">You can use a plain text file (.txt or .md). Its text fills the message box; check it before sending.</small></div><label for="owner-message-attachments" id="owner-message-attachments-label"><strong>Separate supporting documents or screenshots</strong></label><input id="owner-message-attachments" type="file" multiple accept=".pdf,.md,.txt,.rtf,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,text/markdown"><small id="owner-message-attachments-help">Attachments stay separate from the message. Up to 5 files, 10 MB each. Choosing files again adds to this list rather than replacing it. Nothing is sent until you press Send.</small><ul id="owner-message-attachments-list"></ul><p id="owner-message-error" class="notice" role="alert" aria-live="polite"></p><div class="modal-actions"><button type="button" class="secondary" id="owner-message-cancel">Cancel</button><button type="submit" id="owner-message-submit">Send direction</button></div></form></dialog>
@@ -237,6 +237,7 @@ let boardFailures=0;
 const activeStates=['launching','running','stopping','pausing'];
 const preservedSessionStates=['paused'];
 const terminalColors=[
+  {id:'settings',label:"This agent's colour from Settings",hex:''},   // pre-selected: the hex is the role's, filled in when the dialog opens
   {id:'black',label:'Standard black',hex:'#000000'},
   {id:'blue',label:'Ocean blue',hex:'#123B5D'},
   {id:'purple',label:'Plum purple',hex:'#42275A'},
@@ -253,6 +254,7 @@ let historyLoadedAtVersion='';
 let currentHistoryVersion='';
 let historyLoading=false;
 let pendingLaunchKind='';
+let roleColorView=null;   // {builder|reviewer|cto: {hex, ink, terminal, label}} from the last board read
 let directionAfterLaunch=false;   // Give direction with no Delivery agent running opens the Start dialog first, then the direction box
 let pendingDirectionLaunch=null;  // 2026-11-08: the launch choices wait until the direction is read and accepted; a pasted screen starts nothing
 // task build-wish-list, review cycle 1 finding: Build this must still carry the wish's text
@@ -1676,6 +1678,7 @@ async function submitRejection(event){
 // Issue #92: the colours the owner chose in Settings ({builder|reviewer|cto: {hex, ink}}, from the server's fixed list).
 function applyRoleColors(colors){
   const style=typeof document!=='undefined'&&document.documentElement&&document.documentElement.style;
+  if(colors)roleColorView=colors;            // the start dialog and the agent rows show each window's Settings colour
   if(!style||!colors)return;
   for(const role of ['builder','reviewer','cto']){const color=colors[role];if(!color)continue;style.setProperty(`--mc-${role}-color`,color.hex);style.setProperty(`--mc-${role}-ink`,color.ink);}
 }
@@ -1691,8 +1694,17 @@ function paintAgentRole(node,role){
   if(node.dataset){if(role)node.dataset.agentRole=role;else delete node.dataset.agentRole;}
 }
 
+// The window colour of a session started with no colour of its own: its role's Settings colour (owner 2026-11-17).
+function settingsWindowColor(kind){
+  const view=(roleColorView||{})[agentColorRole(null,{kind})];
+  return {hex:view?.terminal||'#000000',label:view?.label?`Settings colour (${view.label})`:'Settings colour'};
+}
 function sessionColorHtml(session){
-  const color=session?.color_hex||'#000000', label=session?.color_label||'Standard black';
+  // The colour the window really opened in wins; before it opens, a Settings-colour session shows today's Settings colour.
+  const opened=session?.window_color?.label?session.window_color:null;   // hex '' = the terminal refused the colour
+  // An older session with no recorded window keeps showing what it opened in (its stored colour) until it is relaunched.
+  const fromSettings=!opened&&session?.color==='settings'?settingsWindowColor(session.kind):null;
+  const color=opened?(opened.hex||'transparent'):(fromSettings?.hex||session?.color_hex||'#000000'), label=opened?.label||fromSettings?.label||session?.color_label||'Standard black';
   return `<span class="terminal-color"><i class="terminal-color-swatch" style="background:${esc(color)}" aria-hidden="true"></i>Terminal color: ${esc(label)}</span>`;
 }
 
@@ -2122,7 +2134,7 @@ function sessionsInto(out,items,state,contracts){
     const details=terminalDetails(session,state,contracts);
     const row=document.createElement('div');row.className='session';row.dataset.sessionId=session.id;row.dataset.task=details.task;
     if(session.color_hex){row.style=row.style||{};row.style.borderLeft=`6px solid ${session.color_hex}`;row.style.paddingLeft='10px';}
-    const colorNote=session.color_label?`<span class="terminal-color"><i class="terminal-color-swatch" style="background:${esc(session.color_hex||'#000000')}" aria-hidden="true"></i>Terminal color: ${esc(session.color_label)}</span>`:'<span class="terminal-color"><i class="terminal-color-swatch" style="background:#000000" aria-hidden="true"></i>Terminal color: Standard black</span>';
+    const colorNote=sessionColorHtml(session);
     const label=document.createElement('div');label.innerHTML=`<strong>${esc(session.label)} — ${esc(details.task)}</strong>${badge(details.stage)}<small>${esc(details.summary)}</small>${colorNote}`;
     const stop=document.createElement('button');stop.className='stop';stop.textContent='Stop';stop.disabled=session.status==='stopping';stop.dataset.sessionId=session.id;stop.dataset.task=details.task;stop.onclick=()=>confirmStopSession(session.id,session.label,details.task,details.stage);
     const actions=document.createElement("div");actions.className="actions";actions.append(viewAgentButton(session),stop);row.append(label,actions);out.append(row);
@@ -2813,15 +2825,16 @@ function fillLaunchChoice(settings){
 }
 async function showColorDialog(kind){
   pendingLaunchKind=kind; directionAfterLaunch=false;
-  el('#color-options').innerHTML=terminalColors.map((color,index)=>`<label class="color-choice"><input type="radio" name="terminal-color" value="${color.id}"${index===0?' checked':''}><span class="color-swatch" style="background:${color.hex}"></span><span>${color.label}</span></label>`).join('');
+  const fromSettings=settingsWindowColor(kind);
+  el('#color-options').innerHTML=terminalColors.map((color,index)=>`<label class="color-choice"><input type="radio" name="terminal-color" value="${color.id}"${index===0?' checked':''}><span class="color-swatch" style="background:${color.id==='settings'?fromSettings.hex:color.hex}"></span><span>${color.id==='settings'?`${color.label} (${esc(fromSettings.label.replace(/^Settings colour \(|\)$/g,''))})`:color.label}</span></label>`).join('');
   const choice=el('#launch-choice'), isDelivery=kind==='codex_delivery';
   {const radio=el('#launch-task-kind input[value="'+storedTaskKind()+'"]');if(radio)radio.checked=true;}
   choice.hidden=!isDelivery; launchChoiceReady=false; launchChoiceDamaged=false; launchChoiceSettings=null;
   el('#color-dialog-title').textContent=isDelivery?'Start a Delivery Agent':'Choose terminal color';
-  el('#color-cancel').textContent=isDelivery?'Cancel — use Settings and black':'Cancel — use black';
+  el('#color-cancel').textContent=isDelivery?'Cancel — use Settings':'Cancel — use the Settings colour';
   // A paused project disables EVERY button and rewrites their tooltips (render); a reopened dialog after Resume
   // must give all three of its buttons back, Close included (Codex batch review F2, 2026-10-17: Close stayed disabled).
-  for(const [id,title] of [['#color-close','Close this dialog; nothing is launched.'],['#color-cancel',isDelivery?"Launch with Settings' provider, model and effort, standard black.":'Launch with the standard black background.'],['#color-launch','Launch with the choices above.']]){const b=el(id);b.disabled=false;b.title=title;}
+  for(const [id,title] of [['#color-close','Close this dialog; nothing is launched.'],['#color-cancel',isDelivery?"Launch with Settings' provider, model, effort and this agent's colour.":"Launch with this agent's colour from Settings."],['#color-launch','Launch with the choices above.']]){const b=el(id);b.disabled=false;b.title=title;}
   const link=el('#launch-settings-link'); link.href=settingsPageHref()||'#'; link.hidden=!isDelivery||!settingsPageHref();
   el('#color-dialog').showModal();
   if(!isDelivery)return;
@@ -2855,12 +2868,12 @@ function launchChoiceFromDialog(){
   return {provider:el('#launch-provider').value,model,effort:el('#launch-effort').value};
 }
 
-async function start(kind,color='black',launchSettings=null){
+async function start(kind,color='settings',launchSettings=null){
   try{const body={kind,color}; if(launchSettings)body.launch_settings=launchSettings;
     const started=await call('/api/sessions',body); const session=started?.session||{};
     // The notice is built from what the server STORED (the effective provider, model and effort), never from what the page
     // guessed: until 2026-10-17 it read a field the response does not carry and announced the role's default provider.
-    const providerName=String(session.provider||(kind==='codex_delivery'?'codex':'claude')).toUpperCase(), role=kind==='claude_cto'?'CTO':`${providerName} ${kind==='codex_delivery'?'Delivery Agent':'Independent Reviewer'}`;const shade=terminalColors.find(item=>item.id===color)?.label||'standard black';
+    const providerName=String(session.provider||(kind==='codex_delivery'?'codex':'claude')).toUpperCase(), role=kind==='claude_cto'?'CTO':`${providerName} ${kind==='codex_delivery'?'Delivery Agent':'Independent Reviewer'}`;const shade=color==='settings'?settingsWindowColor(kind).label:(terminalColors.find(item=>item.id===color)?.label||'standard black');
     const effortLabel=session.effort==='xhigh'?'extra high':(session.effort||''); const withModel=session.model?` with ${session.model}${effortLabel?` at ${effortLabel} effort`:''}`:'';
     const adjust=session.launch_choice_note?` ${session.launch_choice_note}.`:'';
     const memory=kind==='codex_delivery'&&session.cli_session_id&&session.cli_session_provider&&session.cli_session_provider!==session.provider
@@ -3031,7 +3044,7 @@ async function startMissingAgents(){
   const failed=[], started=[], reasons=[];
   for(const [kind,name] of [['codex_delivery','Delivery'],['claude_reviewer','the Independent Reviewer'],['claude_cto','the CTO']]){
     if(Number(counts[kind]||0)>0)continue;
-    if(await start(kind,'black'))started.push(name);else{failed.push(name);reasons.push(`${name}: ${el('#notice').textContent.replace(/^Could not launch session:\s*/,'')}`);}
+    if(await start(kind,'settings'))started.push(name);else{failed.push(name);reasons.push(`${name}: ${el('#notice').textContent.replace(/^Could not launch session:\s*/,'')}`);}
   }
   // start() leaves its own notice (on Linux it carries the attach command); keep it and add what the owner must know
   if(failed.length)el('#notice').textContent=`${reasons.join(' ')} Press that role's Start button to try again; nothing else is lost.`;
@@ -3182,8 +3195,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(cancel)cancel.addEventListener('click',()=>el('#spec-questions-dialog').close());
 });
 el('#color-close').onclick=()=>{launchChoiceToken++;el('#color-dialog').close();pendingLaunchKind='';directionAfterLaunch=false;};
-el('#color-cancel').onclick=()=>{if(launchChoiceDamaged)return;launchChoiceToken++;el('#color-dialog').close();const kind=pendingLaunchKind;pendingLaunchKind='';if(kind==='codex_delivery')storeTaskKind(launchTaskKind());if(kind){const after=kind==='codex_delivery'&&directionAfterLaunch;directionAfterLaunch=false;if(after){pendingDirectionLaunch={kind,color:'black',choice:null};openDirectionStart(true);return;}start(kind,'black');}};
-el('#color-form').onsubmit=event=>{event.preventDefault();if(el('#color-launch').disabled)return;const selected=el('#color-options').querySelector('input[name="terminal-color"]:checked')?.value||'black';const kind=pendingLaunchKind;const choice=kind==='codex_delivery'?launchChoiceFromDialog():null;if(kind==='codex_delivery'&&!choice)return;if(kind==='codex_delivery')storeTaskKind(launchTaskKind());pendingLaunchKind='';launchChoiceToken++;el('#color-dialog').close();if(kind){const after=kind==='codex_delivery'&&directionAfterLaunch;directionAfterLaunch=false;if(after){pendingDirectionLaunch={kind,color:selected,choice};openDirectionStart(true);return;}start(kind,selected,choice);}};
+el('#color-cancel').onclick=()=>{if(launchChoiceDamaged)return;launchChoiceToken++;el('#color-dialog').close();const kind=pendingLaunchKind;pendingLaunchKind='';if(kind==='codex_delivery')storeTaskKind(launchTaskKind());if(kind){const after=kind==='codex_delivery'&&directionAfterLaunch;directionAfterLaunch=false;if(after){pendingDirectionLaunch={kind,color:'settings',choice:null};openDirectionStart(true);return;}start(kind,'settings');}};
+el('#color-form').onsubmit=event=>{event.preventDefault();if(el('#color-launch').disabled)return;const selected=el('#color-options').querySelector('input[name="terminal-color"]:checked')?.value||'settings';const kind=pendingLaunchKind;const choice=kind==='codex_delivery'?launchChoiceFromDialog():null;if(kind==='codex_delivery'&&!choice)return;if(kind==='codex_delivery')storeTaskKind(launchTaskKind());pendingLaunchKind='';launchChoiceToken++;el('#color-dialog').close();if(kind){const after=kind==='codex_delivery'&&directionAfterLaunch;directionAfterLaunch=false;if(after){pendingDirectionLaunch={kind,color:selected,choice};openDirectionStart(true);return;}start(kind,selected,choice);}};
 el('#decision-cancel').onclick=()=>el('#decision-dialog').close();
 el('#decision-form').onsubmit=submitRejection;
 el('#push-cancel').onclick=()=>el('#push-dialog').close();
@@ -4758,10 +4771,11 @@ def dashboard_payload(
 def role_color_view(settings: dict[str, Any] | None) -> dict[str, dict[str, str]]:
     """Issue #92: the colour each story role (builder, reviewer, cto) wears in Mission Control, as {role: {hex, ink}}.
 
-    Takes the global settings document (None when this board has none: the defaults are used).
+    Takes the global settings document (None when this board has none: the defaults are used). `terminal` is the
+    dark shade the role's CLI window opens in; `label` names the colour.
     """
     chosen = control.validated_role_colors((settings or {}).get("role_colors"), repair=True)
-    return {story_role: {key: control.ROLE_COLOR_CHOICES[chosen[role]][key] for key in ("hex", "ink")}
+    return {story_role: {key: control.ROLE_COLOR_CHOICES[chosen[role]][key] for key in ("hex", "ink", "terminal", "label")}
             for story_role, role in (("builder", "delivery"), ("reviewer", "reviewer"), ("cto", "cto"))}
 
 
@@ -5060,7 +5074,7 @@ def create_session_request(root: Path, data: dict[str, Any], settings_home: Path
     if launch_choice is not None and not isinstance(launch_choice, dict):
         raise ValueError("the launch choice must be an object with provider, model and effort")
     return control.create(
-        root, str(data.get("kind", "")), str(data.get("task", "")), str(data.get("color", "black") or "black"),
+        root, str(data.get("kind", "")), str(data.get("task", "")), str(data.get("color") or control.SETTINGS_COLOR),   # no pick: the role's Settings colour
         settings_override=settings_override, launch_choice=launch_choice,
         availability=_delivery_availability(settings_home),
         finished_predecessor=_finished_delivery_predecessor(root) if str(data.get("kind", "")) == "codex_delivery" else "",
@@ -5103,6 +5117,32 @@ def notify_cto_of_cancel(root, task: str) -> list[str]:
     return told
 
 
+def window_color(session: dict[str, Any], manager_home: Path | None) -> dict[str, Any]:
+    """The {label, hex, rgb} one agent's CLI window opens in: control.terminal_color with the owner's Settings.
+
+    Takes the session record and the Settings folder (None: the default role colours). Settings are only read; an
+    unreadable file falls back to the default role colours, so a colour never stops an agent from starting.
+    """
+    try:
+        settings = global_settings.load(Path(manager_home)) if manager_home else None
+    except Exception:   # noqa: BLE001 - a colour is a display; the agent must start whatever the Settings file holds
+        settings = None
+    return control.terminal_color(session, settings)
+
+
+def note_window_color(root: Path, session_id: str, color: dict[str, Any], surface: Any) -> None:
+    """Record on the session the colour its new window really shows, so its row and View agent never claim another.
+
+    Takes the project root, the session id, the colour asked for and the SessionSurface the terminal gave back: a
+    terminal that refused the colour (surface.colored is False) is recorded as not coloured. Never raises.
+    """
+    shown = color if getattr(surface, "colored", None) is not False else {"label": "Not coloured (the terminal refused the colour)", "hex": ""}
+    try:
+        control.record_window_color(root, session_id, shown)
+    except Exception:   # noqa: BLE001 - a colour note must never turn an opened window into a failed launch
+        pass
+
+
 def launch_terminal(root: Path, session: dict, *, manager_home=None) -> platform_support.SessionSurface:
     """Open exactly one visible macOS Terminal session for a hard-coded agent role."""
     from harness import claude_auth
@@ -5128,15 +5168,17 @@ def launch_terminal(root: Path, session: dict, *, manager_home=None) -> platform
         arguments += ["--manager-home", str(manager_home)]
     if auth_socket:
         arguments += ["--claude-auth-bootstrap", auth_socket]
-    color = control.SESSION_COLORS.get(session.get("color", "black"), control.SESSION_COLORS["black"])
+    color = window_color(session, manager_home)   # the role's Settings colour unless this start chose one
     try:
         # The surface is RETURNED, not discarded. On macOS the window is already
         # in front of the owner and there is nothing to say; on Linux the
         # session runs in tmux and the owner has no way to reach it unless
         # Mission Control tells them the command.
-        return platform_support.terminal_host().open_session(
+        surface = platform_support.terminal_host().open_session(
             session["id"], arguments, color_rgb=color["rgb"],
         )
+        note_window_color(root, session["id"], color, surface)
+        return surface
     except platform_support.UnsupportedPlatformOperation as error:
         # Surface the PLATFORM'S OWN refusal. This used to hardcode the macOS
         # wording, so a Linux owner whose only problem was a missing tmux was

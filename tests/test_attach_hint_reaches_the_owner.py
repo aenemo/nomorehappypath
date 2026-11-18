@@ -49,12 +49,17 @@ class SurfaceIsReturnedTests(unittest.TestCase):
         self.assertEqual(surface.attach_hint, "")
 
     def test_the_launcher_does_not_DISCARD_the_surface(self):
-        """The defect this file exists for: the hint was built and thrown away."""
-        source = (Path(__file__).resolve().parent.parent / "harness" / "board_viewer.py").read_text(encoding="utf-8")
-        body = source[source.index("def launch_terminal("):]
-        body = body[:body.index("\ndef ", 1)]
-        self.assertIn("return platform_support.terminal_host().open_session", body,
-                      "launch_terminal must RETURN the surface, not discard it")
+        """The defect this file exists for: the hint was built and thrown away. Behaviour, not source text: the
+        launcher now also records the window's colour before returning (2026-11-17), which a text match misread."""
+        import tempfile
+        from harness import control
+        surface = platform_support.SessionSurface("s", "tmux attach -t x")
+        host = mock.Mock(); host.open_session.return_value = surface
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(platform_support, "terminal_host", return_value=host), \
+             mock.patch("harness.claude_auth.prepare_launch", return_value=None):
+            session = control.create(Path(tmp), "codex_delivery")
+            self.assertIs(board_viewer.launch_terminal(Path(tmp), session), surface,
+                          "launch_terminal must RETURN the surface, not discard it")
 
 
 class ItReachesThePageTests(unittest.TestCase):
