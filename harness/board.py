@@ -20903,6 +20903,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _registered_context(args) -> ProjectContext | None:
+    """The NMHP-registered folders for a command given only --root, or None (keep today's folders).
+
+    A local `board.py --root <project>` used to run against the legacy default folders even when NMHP registers
+    that project with its own task-workspace folder, so a task worktree landed where the project's agents may not
+    write (Lease and contract analysis, 2026-11-19). Read-only. It reads the default NMHP home (~/.harness-home); an
+    NMHP started with another --home needs --data-root and --workspace-root given explicitly. Not registered keeps
+    today's folders silently; an unreadable registry or two matches keep them with a note on stderr."""
+    if getattr(args, "data_root", "") or getattr(args, "workspace_root", ""):
+        return None
+    from harness import project_registry
+    home = project_registry.default_home()
+    code_root = Path(args.root).expanduser()
+    try:
+        matches = [entry for entry in project_registry.entries(home)
+                   if entry.get("code_root") and project_registry._same_directory(Path(str(entry["code_root"])).expanduser(), code_root)]
+        if len(matches) == 1:
+            return project_registry.context_for_entry(matches[0])
+        problem = f"{len(matches)} NMHP projects use this folder" if matches else ""
+    except Exception as error:   # the registry is never allowed to stop a board command
+        problem = f"the NMHP project list could not be read ({type(error).__name__})"
+    if problem:
+        legacy = ProjectContext.compatibility(code_root)
+        print(f"note: {problem} in {home}; using {legacy.data_root} and {legacy.workspace_root}. "
+              "Give --data-root and --workspace-root to choose the folders.", file=sys.stderr)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the board CLI with argv (or sys.argv when omitted): route the
     command to the managed worker client when a live board client is
@@ -20922,7 +20950,7 @@ def main(argv: list[str] | None = None) -> int:
         return board_client.invoke(requested)
     parser = build_parser()
     args = parser.parse_args(argv)
-    root = context_from_args(args)
+    root = _registered_context(args) or context_from_args(args)
     if live_board:
         try:
             aimed_at_live_board = Path(live_board).resolve() == Path(project_context(root).data_root).resolve()
