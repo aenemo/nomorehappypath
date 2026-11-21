@@ -574,6 +574,7 @@ PAGE = r'''<!doctype html>
               <li><strong>Current stage</strong> shows progress inside the active phase. It can move while the whole-task bar stays flat.</li>
               <li>On the <strong>Story</strong> tab each finished step turns green, and a line under the task says what it is <strong>Running as</strong> (the kind of work you chose).</li>
               <li>The bars are not a timer. Review, repair, release checks, or owner validation can add time without meaning the code is being rewritten.</li>
+              <li>Only a product problem holds a release: a failed review or test, a deliverable you cannot open, a copy that is not the reviewed one, or a failed health check. Missing paperwork (a builder's proof file or sign-off, a record or list format) never does; it shows as one line on the task's Story.</li>
               <li>Red or repair-colored progress means a gate needs attention or a repair cycle. Open the task or agent status and read <strong>What happens next</strong>.</li>
               <li>If progress appears stuck, check the CTO status first. It should say whether work is active, waiting for review, waiting for release checks, or waiting for you.</li>
             </ul>

@@ -59,6 +59,8 @@ AWAITING_OWNER_DIRECTION = "AWAITING_OWNER_DIRECTION"
 REVIEW_EXECUTION_STALE_SECONDS = 90
 REVIEW_EXECUTION_HEARTBEAT_SECONDS = 5
 REVIEW_ROUTE_RETRY_SECONDS = 90
+# Owner 2026-11-20: a builder's "complete" is paperwork. After a final PASS the release waits this long for it, then goes ahead.
+RELEASE_SIGNOFF_GRACE_SECONDS = 600
 # Batch 2 item C: a review waiting on a signed-out reviewer this long alerts the owner once.
 REVIEWER_SIGN_IN_ALERT_SECONDS = 600
 REVIEWER_SIGN_IN_HEADLINE = "Reviewer needs sign-in: nothing will progress"
@@ -7663,6 +7665,26 @@ def _final_pass_for(state: dict[str, Any], task: str, head: str = "") -> bool:
     return not head or not reviewed or reviewed == head   # a project without Git has no commit identity to compare
 
 
+def current_builder(state: dict[str, Any], task: str, request: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The builder that carries the task now, by the task's replacement lineage (the same model the release gate reads): the one
+    active lineage endpoint; else the review's own builder when it is an endpoint; else the newest endpoint; else None. A
+    superseded builder is never chosen, even while its terminal is still alive.
+
+    2026-11-20 (Lease): the review's builder went offline and a replacement resumed the task; the finish nudge and the owner's
+    decision both went to the offline one, so nothing ever completed and the release waited for ever."""
+    from harness import cto  # local: cto imports this module
+    builders = [a for a in (state.get("agents") or {}).values()
+                if isinstance(a, dict) and a.get("role") in DEVELOPER_ROLES and a.get("task") == task and a.get("id")]
+    endpoints = cto._task_lineage(state, task, builders)["endpoints"]
+    active = [a for a in endpoints if a.get("active")]
+    if len(active) == 1:
+        return active[0]
+    own = next((a for a in endpoints if a.get("id") == str((request or {}).get("developer_id") or "")), None)
+    if own is not None:
+        return own
+    return max(endpoints, key=lambda a: str(a.get("spawned_at") or a.get("registered_at") or ""), default=None)
+
+
 def owner_review_waiver_for(state: dict[str, Any], request: dict[str, Any] | None) -> dict[str, Any] | None:
     """The owner's review waiver for exactly this final review request and its reviewed commit, else None.
 
@@ -13039,6 +13061,39 @@ def clear_control_plane_hold(root: ProjectRoot, task: str, source: str) -> dict[
         return json.loads(json.dumps(hold))
 
 
+PROCESS_CHECK_WORDS = {
+    "requirements_confirmation_recorded": "the requirements confirmation record",
+    "requirements_confirmation_scope_match": "the requirements confirmation's match with your direction",
+    "delivery_plan_recorded": "the delivery plan record",
+    "owner_direction_recorded": "the record of your direction",
+    "product_structure_complete": "the plan's parts bookkeeping",
+    "delivery_chunks_complete": "the plan's parts bookkeeping",
+    "development_qa_passed": "the builder's internal check step",
+    "scenario_ledger_complete": "the builder's scenario list format",
+    "reviewer_challenge_ledger_complete": "the reviewer's challenge list format",
+    "completion_contract_complete": "the builder's proof file for each deliverable",
+    "development_agents_complete": "the builder's own \"finished\" sign-off",
+}
+
+
+def release_prepared_with_notes(root: ProjectRoot, task: str, commit: str, advisory: list[str]) -> None:
+    """The release is prepared: close a "cannot be released yet" card the owner's decision raised, and name the open paperwork in
+    one plain line on the task's Story, once per candidate — never a hold, never a card (owner 2026-11-20: only bugs stop a
+    release). Idempotent: every later coordinator pass may call it again."""
+    with locked_state(root) as state:
+        for card in list((state.get("owner_actions") or {}).values()):
+            if isinstance(card, dict) and card.get("status") == "open" and card.get("card_key") == f"waiver_blocked:{task}":
+                _resolve_owner_action(state, card, "Resolved: the release went ahead; the open paperwork is only noted", "release_prepared")
+        words = sorted({PROCESS_CHECK_WORDS.get(key, key) for key in advisory})
+        already = any(event.get("kind") == "release_process_notes" and event.get("task") == task and event.get("commit") == commit
+                      for event in state.get("events", []))
+        if words and not already:
+            _event(state, "release_process_notes", None, {
+                "task": task, "commit": commit, "checks": sorted(advisory), "words": words,
+                "message": f"{task}: the release goes ahead without waiting for paperwork (not a product problem): " + "; ".join(words),
+            })
+
+
 def simulation_evidence_complete(root: Path, request: dict[str, Any], field: str, ledger_field: str, state: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
     """Verify recorded simulation evidence still matches its ledger and file."""
     problems = []
@@ -15433,13 +15488,14 @@ def _task_changes_no_product_code(root: Path, review_artifact: dict[str, Any], b
 
 
 def _last_final_pass(state: dict[str, Any], task: str) -> dict[str, Any] | None:
-    """Return task's latest passed final-acceptance (or legacy) independent
-    review request from state, by highest cycle, or None if none passed."""
+    """Return task's latest final-acceptance (or legacy) independent review request that counts as passed (the Reviewer's PASS,
+    or the owner's waiver on exactly that candidate: 2026-11-20, a waived spec's proof pins are checked too), by highest cycle,
+    or None."""
     passes = [
         request for request in _task_requests(state, task)
         if request.get("stage") == INDEPENDENT_REVIEW
         and request.get("phase", "legacy") in {"final_acceptance", "legacy"}
-        and request.get("status") == "passed"
+        and review_counts_as_passed(state, request)
     ]
     return max(passes, key=lambda request: int(request.get("cycle", 0)), default=None)
 
@@ -15463,13 +15519,12 @@ def _completion_gate_problems(
     root: Path, state: dict[str, Any], task: str, developer_id: str,
     proof_check: tuple[str, list[str], tuple[Any, ...]] | None = None,
 ) -> list[str]:
-    """Return the deterministic gates that used to run only after final PASS."""
+    """The completion gates that still refuse after a passed final review: only product problems.
+
+    Owner 2026-11-20: "a process issue does not stop releasing the app, only bugs do". A no-product-code task without its
+    proof files (the deliverable itself) and an app spec the owner never answered still refuse; the Completion Contract's
+    paperwork and the owner-direction records are `_completion_process_notes`, recorded on the completion, never a refusal."""
     problems: list[str] = []
-    complete_contract, contract_problems, contract_value = contract.contract_complete(root, task)
-    if not complete_contract:
-        remedy = (f" — {CONTRACT_EVIDENCE_GUIDANCE}"
-                  if any("evidence" in problem or "remaining work" in problem for problem in contract_problems) else "")
-        problems.append("Completion Contract is incomplete: " + "; ".join(contract_problems) + remedy)
     last_pass = _last_final_pass(state, task)
     if last_pass and last_pass.get("no_product_code_task"):
         if proof_check is None:
@@ -15482,29 +15537,40 @@ def _completion_gate_problems(
         if proof_problems:
             problems.append(_no_product_code_message(proof_problems))
     owner_direction = owner_direction_for_task(state, developer_id, task)
-    if not owner_direction:
-        problems.append("recorded owner direction is missing")
     # Owner repair 2026-11-09 (round 2): the propose-requirements gate alone was not enough for
     # the owner's own confidence that a spec can never be handed in unskimmed — this is the same
     # check, repeated at completion, so no other path (a repair, a retained plan) can reach
     # complete() for an app-spec task whose card the owner never actually answered.
-    if owner_direction and app_spec_card_required(state, task, owner_direction, task_kind(state, task)) and not app_spec_card_satisfied(state, task):
+    # 2026-11-20 (Codex plan check R2-1): the direction record is paperwork now, but the owner's consent is not; a spec task whose
+    # direction cannot be read still needs the answered card (the "not an app spec" escape phrase lives in that direction).
+    kind = task_kind(state, task)
+    card_required = app_spec_card_required(state, task, owner_direction, kind) if owner_direction else kind == "spec"
+    if card_required and not app_spec_card_satisfied(state, task):
         problems.append(
             "this app spec's question card was never answered by the owner (propose-spec-questions, "
             "then poll's spec_answers, before requirements and before completion)"
         )
-    if complete_contract and owner_direction:
-        objective_matches = (
-            contract.normalize_owner_direction(contract_value["objective"])
-            == owner_direction
-        )
-        confirmation_recorded = bool(state.get("requirement_confirmations", {}).get(task))
-        if not objective_matches and not confirmation_recorded:
-            problems.append(
-                "Completion Contract objective differs from the owner direction and no "
-                "requirements confirmation records the agreed translation"
-            )
     return problems
+
+
+def _completion_process_notes(root: Path, state: dict[str, Any], task: str, developer_id: str) -> list[str]:
+    """The paperwork of a completion: noted on the completion and in the release checks, never a refusal or a hold (owner 2026-11-20)."""
+    notes: list[str] = []
+    try:
+        complete_contract, contract_problems, contract_value = contract.contract_complete(root, task)
+    except (FileNotFoundError, json.JSONDecodeError):
+        complete_contract, contract_problems, contract_value = False, ["Completion Contract missing"], {}
+    if not complete_contract:
+        notes.append("Completion Contract is incomplete: " + "; ".join(contract_problems))
+    owner_direction = owner_direction_for_task(state, developer_id, task)
+    if not owner_direction:
+        notes.append("recorded owner direction is missing")
+    if complete_contract and owner_direction:
+        objective_matches = contract.normalize_owner_direction(contract_value["objective"]) == owner_direction
+        if not objective_matches and not state.get("requirement_confirmations", {}).get(task):
+            notes.append("Completion Contract objective differs from the owner direction and no "
+                         "requirements confirmation records the agreed translation")
+    return notes
 
 
 def _escalation_refusal(state: dict[str, Any], task: str, phase: str, subtask: str, chunk: str) -> None:
@@ -17569,13 +17635,12 @@ def _write_owner_review_waiver(root: Path, state: dict[str, Any], task: str, req
                     + (f"findings closed by him: {', '.join(closed)}" if closed else "no finding closed")
                     + (f"; left open: {', '.join(left_open)}" if left_open else "")),
     })
-    developer = (state.get("agents") or {}).get(str(request.get("developer_id") or ""))
-    if not isinstance(developer, dict):
-        candidates = [a for a in (state.get("agents") or {}).values() if isinstance(a, dict) and a.get("role") in DEVELOPER_ROLES and a.get("task") == task]
-        developer = max(candidates, key=lambda a: str(a.get("spawned_at") or ""), default=None)
+    developer = current_builder(state, task, request)
     result: dict[str, Any] = {"waiver": json.loads(json.dumps(waiver)), "completed": False, "problems": [], "cto_session": "", "cto_item": "", "cto_suffix": ""}
     if developer is None:
-        result["problems"] = ["no builder is recorded on this task, so its completion step cannot be run"]
+        # no builder to sign off: the owner's decision is the sign-off, the release goes ahead (owner 2026-11-20); "completed" so
+        # the owner is told it goes to its release checks and the release tail runs at once
+        result["completed"] = True
     elif developer.get("status") == "done":
         result["completed"] = True
     else:
@@ -17584,7 +17649,8 @@ def _write_owner_review_waiver(root: Path, state: dict[str, Any], task: str, req
             result["problems"] = problems
         else:
             note = "completed on the owner's decision" + (f" (findings closed by him: {', '.join(closed)})" if closed else "") + (f" (left open: {', '.join(left_open)})" if left_open else "")
-            _, cto_session, cto_item, cto_suffix = _record_development_complete(state, developer, note)
+            notes = _completion_process_notes(root, state, task, str(developer.get("id") or ""))
+            _, cto_session, cto_item, cto_suffix = _record_development_complete(state, developer, note, notes)
             result.update({"completed": True, "cto_session": cto_session, "cto_item": cto_item, "cto_suffix": cto_suffix})
     if result["problems"]:
         waiver["completion_problems"] = list(result["problems"])
@@ -18575,16 +18641,21 @@ def complete(root: Path, agent_id: str, note: str) -> dict[str, Any]:
         if completion_problems:
             raise ValueError("delivery cannot complete: " + "; ".join(completion_problems))
         task = str(agent["task"])
-        event, cto_session, cto_item, cto_suffix = _record_development_complete(state, agent, note)
+        notes = _completion_process_notes(root, state, task, agent["id"])
+        event, cto_session, cto_item, cto_suffix = _record_development_complete(state, agent, note, notes)
     _after_development_complete(root, task, cto_session, cto_item, cto_suffix)
     return event
 
 
-def _record_development_complete(state: dict[str, Any], agent: dict[str, Any], note: str) -> tuple[dict[str, Any], str, str, str]:
+def _record_development_complete(state: dict[str, Any], agent: dict[str, Any], note: str,
+                                 process_notes: list[str] | None = None) -> tuple[dict[str, Any], str, str, str]:
     """Inside the lock: the completion stamp, the agent's `done`, the event and the CTO's release wake claim.
 
     Shared by Delivery's own `complete` and by the owner's review waiver (accept-after-repair R8/R9: the owner's decision completes
-    the Delivery the same way a PASS would). Returns (event, cto_session, cto_item, cto_suffix)."""
+    the Delivery the same way a PASS would). `process_notes` is the paperwork still open, named on the event, never a refusal.
+    Returns (event, cto_session, cto_item, cto_suffix)."""
+    if process_notes:
+        note = f"{note} — paperwork noted, not blocking: " + "; ".join(process_notes)
     completed_at = now()
     task = str(agent["task"])
     release_lifecycle = state.setdefault("release_lifecycle", {}).setdefault(task, {"phases": {}})
@@ -18594,7 +18665,8 @@ def _record_development_complete(state: dict[str, Any], agent: dict[str, Any], n
         release_lifecycle.setdefault("phases", {})["completion"] = completion_phase
     release_lifecycle["development_completed_at"] = completed_at
     agent.update({"status": "done", "status_note": note, "last_status_at": completed_at, "active": False})
-    event = _event(state, "development_complete", agent, {"task": task, "lifecycle": completion_phase, "message": note})
+    event = _event(state, "development_complete", agent, {"task": task, "lifecycle": completion_phase, "message": note,
+                                                         **({"process_notes": list(process_notes)} if process_notes else {})})
     cto = next((value for value in state.get("agents", {}).values()
                 if value.get("role") == "cto" and value.get("active") and value.get("session_id")), None)
     cto_session, cto_item, cto_suffix = "", "", ""
@@ -18864,6 +18936,19 @@ def collect_build(root: Path, task: str, agent_id: str = "") -> dict[str, Any]:
     return {"task": task, "build": final, "manifest": manifest}
 
 
+# Owner 2026-11-20: "a process issue does not stop releasing the app, only bugs do". These release checks are the harness's own
+# bookkeeping (records, the ledgers' form, the plan's structure, the internal QA step, the builder's status, the contract's
+# evidence rows). They are still computed and shown as `advisory_failures`; no gate holds a release on them. Everything else in
+# the required sets (the review or the owner's decision on it, tests and scenario executions, the candidate's identity, git,
+# health, fast-forward, mirror, runtime, build, readable owner documents) still holds.
+PROCESS_RELEASE_CHECKS = frozenset({
+    "requirements_confirmation_recorded", "requirements_confirmation_scope_match",
+    "delivery_plan_recorded", "owner_direction_recorded",
+    "product_structure_complete", "delivery_chunks_complete", "development_qa_passed",
+    "scenario_ledger_complete", "reviewer_challenge_ledger_complete",
+    "completion_contract_complete", "development_agents_complete",
+})
+
 RELEASE_REQUIRED_CHECKS = {
     "delivery_plan_recorded", "product_structure_complete",
     "development_qa_passed", "unit_tests_passed", "independent_review_passed",
@@ -18875,7 +18960,7 @@ RELEASE_REQUIRED_CHECKS = {
     "claim_scope_audit_passed", "development_agents_complete",
     "main_branch", "git_clean", "main_pushed", "main_health_verified",
     "task_artifact_release_verified",
-    "owner_artifacts_readable",
+    "owner_artifacts_readable", "contract_scope_intact", "completion_product_ready",
     "ready_for_owner_test",
 }
 
@@ -18889,7 +18974,8 @@ BROKER_RELEASE_REQUIRED_CHECKS = {
     "development_agents_complete", "candidate_branch", "git_clean",
     "candidate_health_verified", "task_artifact_release_verified",
     "main_fast_forward_safe", "mirror_candidate_verified",
-    "runtime_verification_scope_correct", "owner_artifacts_readable", "ready_for_owner_test",
+    "runtime_verification_scope_correct", "owner_artifacts_readable", "contract_scope_intact",
+    "completion_product_ready", "ready_for_owner_test",
 }
 
 
@@ -19205,7 +19291,7 @@ def record_release_ready(root: Path, agent_id: str, task: str, checks: dict[str,
             }
         if checks.get("build_required"):
             required_checks = set(required_checks) | {"build_collected"}
-        failed = sorted(key for key in required_checks if checks.get(key) is not True)
+        failed = sorted(key for key in set(required_checks) - PROCESS_RELEASE_CHECKS if checks.get(key) is not True)
         open_in_scope = [
             finding for finding in state.get("deferred_findings", {}).values()
             if finding.get("task") == task and finding.get("status") == "in_scope"

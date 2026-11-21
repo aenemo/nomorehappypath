@@ -551,7 +551,10 @@ runs at final acceptance only, never at a chunk or subtask review.
    main. If main moved only in commit metadata while retaining the exact
    reviewed Git tree, the CTO may use the board's `repin-final-review` command;
    the board must verify equal tree hashes itself. Any changed byte requires a
-   new final-acceptance cycle. Do not claim completion yourself.
+   new final-acceptance cycle. When the board tells you the final PASS is
+   certified, run `complete` once; never claim the task is released yourself.
+   Your `complete` and your proof rows are paperwork: the release never waits
+   on them (owner 2026-11-20: only product problems hold a release).
    Before staging, write the exact reviewed file manifest into the task
    evidence. Stage only those explicit paths; never use `git add .`,
    `git add -A`, or another whole-tree staging command in a shared checkout.

@@ -219,6 +219,14 @@ REOPENING_EVENTS = frozenset({
 })
 
 
+def readiness(checks: dict[str, Any], required: set[str]) -> tuple[bool, list[str]]:
+    """(ready_for_owner_test, advisory_failures): ready when every required PRODUCT check passed; a failed process check
+    (board.PROCESS_RELEASE_CHECKS) is listed, never a reason to hold (owner 2026-11-20: only bugs stop a release)."""
+    product = set(required) - board.PROCESS_RELEASE_CHECKS
+    advisory = sorted(key for key in set(required) & board.PROCESS_RELEASE_CHECKS if checks.get(key) is not True)
+    return all(checks.get(key) is True for key in product), advisory
+
+
 def _delivery_completed(state: dict[str, Any], task: str, agent: dict[str, Any]) -> bool:
     """A Delivery is complete when it says so, or when its recorded completion stands.
 
@@ -803,8 +811,20 @@ def release_check(root: Path, task: str, ledger: Path, repo: Path, profile: dict
         contract_ok, contract_problems, _ = contract.contract_complete(root, task)
     except (FileNotFoundError, json.JSONDecodeError):
         contract_ok, contract_problems = False, ["Completion Contract missing"]
-    checks["completion_contract_complete"] = contract_ok
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        contract_ok, contract_problems = False, ["Completion Contract could not be read"]
+    checks["completion_contract_complete"] = contract_ok   # process (advisory): evidence rows, remaining work, fields
     checks["completion_contract_problems"] = contract_problems
+    # Owner 2026-11-20: only product problems hold. The contract's product part (agreed scope unchanged, every exclusion approved)
+    # and the completion's product gates (a no-product-code task's proof files, an answered app-spec card) are checked here on
+    # EVERY release path, whether or not a builder ran `complete`.
+    scope_problems = contract.scope_problems(root, task)
+    checks["contract_scope_intact"] = not scope_problems
+    checks["contract_scope_problems"] = scope_problems
+    builder = board.current_builder(state, task, latest_review)
+    product_problems = board._completion_gate_problems(root, state, task, str((builder or {}).get("id") or "")) if latest_review else ["no final review"]
+    checks["completion_product_ready"] = not product_problems
+    checks["completion_product_problems"] = product_problems
     # Owner 2026-10-15: a document the owner must read is reachable before the
     # owner is asked to test; the latest marked file per deliverable must be
     # readable and, when the final review recorded a manifest, be a file that
@@ -849,13 +869,13 @@ def release_check(root: Path, task: str, ledger: Path, repo: Path, profile: dict
     # neither pass nor block a release on their own. A lexical block has no
     # agent-executable repair (the direction is owner-authored), and it blocks
     # exactly the sanctioned pointer-style directive whose words are a file
-    # path. The enforceable mechanical facts are: an owner direction exists,
-    # and the final integrated acceptance — whose delivery-mode audit IS the
-    # executed claim-scope audit — is present and passed.
+    # path. The enforceable mechanical fact is the final integrated acceptance
+    # — whose delivery-mode audit IS the executed claim-scope audit — present
+    # and passed (the direction record itself is advisory paperwork).
     checks["claim_scope_missing_terms"] = missing
-    checks["claim_scope_audit_passed"] = bool(owner_directions) and bool(
-        checks.get("final_acceptance_review_present")
-    )
+    # Owner 2026-11-20: the record of the direction is paperwork (owner_direction_recorded, advisory); the audit's mechanical
+    # fact is the final integrated acceptance review.
+    checks["claim_scope_audit_passed"] = bool(checks.get("final_acceptance_review_present"))
     # A broker-governed candidate lives on its isolated task branch until the
     # owner accepts it.  The caller's ``repo`` is code_root/main and is
     # intentionally unchanged at this gate, so certify the board-derived task
@@ -945,15 +965,15 @@ def release_check(root: Path, task: str, ledger: Path, repo: Path, profile: dict
             "candidate_branch", "git_clean", "candidate_health_verified",
             "task_artifact_release_verified", "main_fast_forward_safe",
             "mirror_candidate_verified", "runtime_verification_scope_correct",
-            "owner_artifacts_readable",
+            "owner_artifacts_readable", "contract_scope_intact", "completion_product_ready",
         }
     else:
-        required = {"requirements_confirmation_recorded", "requirements_confirmation_scope_match", "delivery_plan_recorded", "product_structure_complete", "development_qa_passed", "unit_tests_passed", "independent_review_passed", "final_acceptance_review_present", "final_review_says_task_done_yes", "delivery_chunks_complete", "scenario_ledger_complete", "reviewer_challenge_ledger_complete", "delivery_scenario_simulations_executed", "reviewer_scenario_simulations_executed", "completion_contract_complete", "owner_direction_recorded", "claim_scope_audit_passed", "development_agents_complete", "main_branch", "git_clean", "main_pushed", "main_health_verified", "task_artifact_release_verified", "owner_artifacts_readable"}
+        required = {"requirements_confirmation_recorded", "requirements_confirmation_scope_match", "delivery_plan_recorded", "product_structure_complete", "development_qa_passed", "unit_tests_passed", "independent_review_passed", "final_acceptance_review_present", "final_review_says_task_done_yes", "delivery_chunks_complete", "scenario_ledger_complete", "reviewer_challenge_ledger_complete", "delivery_scenario_simulations_executed", "reviewer_scenario_simulations_executed", "completion_contract_complete", "owner_direction_recorded", "claim_scope_audit_passed", "development_agents_complete", "main_branch", "git_clean", "main_pushed", "main_health_verified", "task_artifact_release_verified", "owner_artifacts_readable", "contract_scope_intact", "completion_product_ready"}
     if checks.get("runtime_gate_required"):
         required |= {"deployed_runtime_verified", "deployed_chat_verified"}
     if checks.get("build_required"):
         required |= {"build_collected"}
-    checks["ready_for_owner_test"] = all(checks.get(key) is True for key in required)
+    checks["ready_for_owner_test"], checks["advisory_failures"] = readiness(checks, required)
     artifact_lifecycle = checks.get("lifecycle", {}) if isinstance(checks.get("lifecycle"), dict) else {}
     checks["lifecycle"] = {
         **artifact_lifecycle,

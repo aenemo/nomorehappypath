@@ -94,8 +94,8 @@ class DeliverableWaiverTests(unittest.TestCase):
             contract.add_evidence(root, "TASK-W", DELIVERABLE_KEPT, [evidence])
             complete, problems, value = contract.contract_complete(root, "TASK-W")
             self.assertFalse(complete, problems)
-            self.assertIn("Completion Contract is incomplete", " ".join(
-                board._completion_gate_problems(root, board.snapshot(root), "TASK-W", delivery["id"])))
+            self.assertIn("Completion Contract is incomplete", " ".join(   # paperwork: a note, never a refusal (owner 2026-11-20)
+                board._completion_process_notes(root, board.snapshot(root), "TASK-W", delivery["id"])))
 
             _waive(root, cto, _owner_said(root, cto, OWNER_WORDS))
 
@@ -105,7 +105,7 @@ class DeliverableWaiverTests(unittest.TestCase):
                              "the owner is never asked to verify what they waived")
             self.assertEqual(value["remaining_work"], [])
             self.assertEqual(value["status"], "complete")
-            gate = board._completion_gate_problems(root, board.snapshot(root), "TASK-W", delivery["id"])
+            gate = board._completion_process_notes(root, board.snapshot(root), "TASK-W", delivery["id"])
             self.assertFalse(any("Completion Contract is incomplete" in p for p in gate), gate)
 
     def test_a_non_waived_unverified_deliverable_still_blocks(self):
