@@ -73,6 +73,8 @@ The first run needs a few sign-ins; the sections below explain each one.
 
 **Where this was tried:** install, sandbox, Mission Control and the start of Claude and Codex agents were verified on a clean Ubuntu 26.04 ARM64 server (Gemini was not part of that test). A full run to Accepted was not completed there.
 
+**Who can reach the app.** Mission Control and the board answer on 127.0.0.1 only, and their pages refuse other sites, cross-site requests and framing. There is no sign-in: the app trusts whatever runs on your machine. That means another user account on the same computer can read the board at http://127.0.0.1:8740/ while it is running, even though the board's saved files themselves are readable only by you (0700 directories, 0600 files). On a computer you share, run the app only while you are using it, or run it on a machine that is yours alone. Forwarding a port over SSH extends the same trust to anyone who can reach that forwarded port.
+
 ## What it is
 
 - **A team of agents.** A builder, an independent reviewer from a different AI company, and a CTO that watches the board. Each role has a one-page card of its rules; every other rule is still there as a named chapter the agent can open. Claude, Codex or Gemini can take any role, and the reviewer is never from the builder's company.

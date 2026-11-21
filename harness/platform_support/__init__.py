@@ -12,13 +12,17 @@ Selection happens once, here. No module outside this package tests
 (`harness/execution_identity.py`, `harness/board.py`) is not deciding, and is
 deliberately left where it is.
 """
+
 from __future__ import annotations
 
 import sys
 
 
 from harness.platform_support.defaults import (  # noqa: E402  (re-exported names)
-    AgentConfinementUnavailable, FolderSelectionTimeout, ProcessTableUnavailable, SessionSurface,
+    AgentConfinementUnavailable,
+    FolderSelectionTimeout,
+    ProcessTableUnavailable,
+    SessionSurface,
     UnsupportedPlatformOperation,
 )
 
@@ -50,8 +54,10 @@ def _selected():
     """
     if sys.platform.startswith("linux"):
         from harness.platform_support import linux
+
         return linux
     from harness.platform_support import defaults
+
     return defaults
 
 
@@ -80,11 +86,9 @@ def browser_host():
     return _selected().BROWSER_HOST
 
 
-
 def folder_chooser():
     """The native folder picker for this platform."""
     return _selected().FOLDER_CHOOSER
-
 
 
 def terminal_host():
@@ -97,7 +101,20 @@ def launch_problem() -> str:
 
     Return: the platform module's own problem description, or "" when the selected platform
     module declares no launch_problem check or that check finds nothing wrong.
+
+    A platform with no implementation answers NO here, by name. This is the
+    predicate the installer and the board read as "agents can start", and the
+    only wrong answer worth engineering against is a yes: an unknown platform
+    used to fall through to the defaults module, which declares no check of its
+    own, so a machine nobody ported reported itself ready and the launcher then
+    refused every agent. Failing closed turns that into one honest sentence
+    before the owner has directed any work.
     """
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return (
+            f"this platform is {sys.platform}; NoMoreHappyPath launches agents on "
+            "macOS and Linux only, so run it inside a Linux VM (or WSL) on this machine"
+        )
     check = getattr(_selected(), "launch_problem", None)
     return check() if check else ""
 

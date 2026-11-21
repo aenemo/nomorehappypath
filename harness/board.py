@@ -103,6 +103,9 @@ HOT_EVENT_BYTES = 90_000
 # on load restores from these instead of silently reinitializing over history.
 BOARD_BACKUP_EVERY_EVENTS = 50
 BOARD_BACKUP_KEEP = 8
+# Recovering the log's last sequence must cost the same on a 20 MB log as on a
+# 2 KB one, so only its tail is read, in chunks of this size.
+LOG_TAIL_CHUNK_BYTES = 64 * 1024
 # Board events that prove an agent is alive and advancing work, so recording one
 # clears a stalled/recovering liveness. These MUST be the kinds actually emitted by
 # _event — "status_update" (a technical status note) and "task_brief_updated" (the
@@ -145,6 +148,54 @@ def now() -> str:
 
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort fsync of a directory so a completed rename survives a crash.
+
+    A file's own fsync flushes its contents but not the directory entry that
+    makes ``os.replace`` visible, so a power loss can still lose the rename.
+    Windows cannot open a directory as a file descriptor at all, so it is
+    skipped there; any other refusal is ignored because the data file itself
+    was already fsynced and a board write must never fail for this.
+    Return: none.
+    """
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _private_board_mode(path: Path, *, directory: bool = False) -> None:
+    """Best-effort tighten one board path to its owner-only mode.
+
+    The board stores the owner's directions and findings, but the default umask
+    leaves its files readable by every local user on the machine. An unusual
+    filesystem that refuses chmod must never break a board write, so OSError is
+    ignored. Return: none.
+    """
+    try:
+        path.chmod(0o700 if directory else 0o600)
+    except OSError:
+        pass
+
+
+def _ensure_board_directory(directory: Path) -> None:
+    """Create the board storage directory with its owner-only mode set.
+
+    Return: none; the directory exists and carries 0700 where the filesystem
+    honours chmod.
+    """
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _private_board_mode(directory, directory=True)
+
+
 def _atomic_write_text(path: Path, payload: str) -> None:
     """Replace a durable file, never rewrite it in place.
 
@@ -160,16 +211,48 @@ def _atomic_write_text(path: Path, payload: str) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(payload, encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
+    _fsync_directory(path.parent)
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Byte-payload counterpart of _atomic_write_text; same reasoning."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_bytes(payload)
+    with temporary.open("wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _write_state_file(path: Path, state: dict[str, Any]) -> None:
+    """Durably replace the board's state file, never rewriting it in place.
+
+    ``last_event_exported`` lives only in this file, so a crash that loses it
+    makes the next persist re-export events already in the log and rewind the
+    sequence numbers the module promises are never reused. The payload is
+    flushed and fsynced before the rename, and the directory is fsynced after
+    it, so the state that survives a crash is never older than the log beside
+    it.
+    Return: none.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    payload = json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    _private_board_mode(temporary)
+    os.replace(temporary, path)
+    _private_board_mode(path)
+    _fsync_directory(path.parent)
 
 
 def board_dir(root: ProjectRoot) -> Path:
@@ -227,6 +310,85 @@ def _continue_from_log(events: Path) -> dict[str, Any]:
     return state
 
 
+def _log_last_sequence(events_path: Path) -> int:
+    """Return the highest sequence already durable at the end of the event log.
+
+    Reading the whole log on every load would make a large board slower every
+    time it is opened, so only the tail is read, in bounded chunks, stopping at
+    the last complete line. A missing, empty or unreadable log reports 0.
+    Return: the maximum sequence found among the final complete lines, or 0.
+    """
+    try:
+        with events_path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            position = stream.tell()
+            if position == 0:
+                return 0
+            window = b""
+            while position > 0:
+                step = min(LOG_TAIL_CHUNK_BYTES, position)
+                position -= step
+                stream.seek(position)
+                window = stream.read(step) + window
+                segments = window.split(b"\n")
+                # The final segment has no newline after it: a crash can leave
+                # one half-written, and a partial line must never be trusted.
+                complete = segments[:-1]
+                if position > 0 and complete:
+                    # The window starts mid-line; its first segment is only the
+                    # tail of a line whose head lives in an earlier chunk.
+                    complete = complete[1:]
+                sequences = []
+                for line in complete:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    try:
+                        sequences.append(int(payload.get("sequence", 0)))
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                if sequences:
+                    return max(sequences)
+    except OSError:
+        return 0
+    return 0
+
+
+def _reconcile_state_with_log(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Raise a loaded state's event markers to the durable log's last sequence.
+
+    The log is the authority on what has already been exported; a saved state
+    or backup is older by definition. Without this, a state that predates the
+    log comes back with ``next_event`` and ``last_event_exported`` behind
+    events already on disk, so the next persist appends them a second time and
+    the sequence numbers this module promises never to reuse get reused.
+    Return: the same state dict, mutated in place.
+    """
+    log_last = _log_last_sequence(board_dir(root) / "events.jsonl")
+    if not log_last:
+        return state
+    next_event = int(state.get("next_event", 1))
+    if log_last < next_event:
+        return state
+    last_exported = int(state.get("last_event_exported", 0))
+    state["next_event"] = log_last + 1
+    state["last_event_exported"] = max(last_exported, log_last)
+    state["event_window_start"] = max(
+        int(state.get("event_window_start", 0) or 0), log_last
+    )
+    _log_board_recovery(
+        root,
+        f"reconciled the saved board state with the durable event log: the log ends at event "
+        f"{log_last}, so next_event and last_event_exported moved past it "
+        f"(next_event was {next_event}, last_event_exported was {last_exported})",
+    )
+    return state
+
+
 def _recover_from_backup(root: Path, allow_restore: bool) -> dict[str, Any] | None:
     """Return the newest usable backup state, restoring the durable files to disk
     when holding the writer lock. None if no backup exists."""
@@ -241,12 +403,13 @@ def _recover_from_backup(root: Path, allow_restore: bool) -> dict[str, Any] | No
             continue
         if allow_restore:
             target = board_dir(root)
-            target.mkdir(parents=True, exist_ok=True)
+            _ensure_board_directory(target)
             for name in ("events.jsonl", "state.json"):
                 source = snap / name
                 if source.is_file() and not (target / name).exists():
                     try:
                         shutil.copy2(source, target / name)
+                        _private_board_mode(target / name)
                     except OSError:
                         pass
         _log_board_recovery(root, f"restored board from backup {snap.name}")
@@ -293,19 +456,24 @@ def _load_or_recover_state(root: Path, allow_restore: bool) -> dict[str, Any]:
     path = _state_path(root)
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            loaded = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             _log_board_recovery(root, "state.json unreadable/corrupt; attempting recovery")
             recovered = _recover_from_backup(root, allow_restore)
             if recovered is not None:
-                return recovered
+                return _reconcile_state_with_log(root, recovered)
             events = board_dir(root) / "events.jsonl"
             if events.is_file() and events.stat().st_size > 0:
                 return _continue_from_log(events)
             return _initial_state()
+        # The log is the authority on what is already exported, so a state file
+        # that somehow lags behind it is raised past the log's end here too.
+        return _reconcile_state_with_log(root, loaded)
     recovered = _recover_from_backup(root, allow_restore)
     if recovered is not None:
-        return recovered
+        # A backup is older by definition, so it can never be trusted alone to
+        # say what the log already holds.
+        return _reconcile_state_with_log(root, recovered)
     events = board_dir(root) / "events.jsonl"
     if events.is_file() and events.stat().st_size > 0:
         _log_board_recovery(root, "state.json absent with no backup; continuing past the durable event log")
@@ -387,7 +555,8 @@ def _append_cold(root: Path, kind: str, values: list[dict[str, Any]]) -> None:
     if not values:
         return
     directory = _cold_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _private_board_mode(directory, directory=True)
     existing = {_cold_identity(kind, value) for value in _read_cold(root, kind)}
     path = _cold_path(root, kind)
     with path.open("a", encoding="utf-8") as stream:
@@ -397,6 +566,7 @@ def _append_cold(root: Path, kind: str, values: list[dict[str, Any]]) -> None:
                 continue
             stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
             existing.add(identity)
+    _private_board_mode(path)
 
 
 def _rewrite_cold(root: Path, kind: str, values: list[dict[str, Any]]) -> None:
@@ -405,13 +575,16 @@ def _rewrite_cold(root: Path, kind: str, values: list[dict[str, Any]]) -> None:
     if not values:
         path.unlink(missing_ok=True)
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _private_board_mode(path.parent, directory=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(
         "".join(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n" for value in values),
         encoding="utf-8",
     )
+    _private_board_mode(temporary)
     os.replace(temporary, path)
+    _private_board_mode(path)
 
 
 def _extract_cold_state(root: Path, state: dict[str, Any]) -> None:
@@ -568,13 +741,26 @@ def _persist_visible_board(root: Path, state: dict[str, Any]) -> None:
     state under root, then archive cold records and trim the in-memory hot
     event window. Mutates state in place. Return value: none."""
     directory = board_dir(root)
-    _atomic_write_text(directory / "BOARD.md", _render_board(state))
-    last_exported = int(state.get("last_event_exported", 0))
+    _ensure_board_directory(directory)
+    board_md = directory / "BOARD.md"
+    _atomic_write_text(board_md, _render_board(state))
+    _private_board_mode(board_md)
+    # The log is the authority on what was already exported. A stale in-memory
+    # marker (a state loaded just before a crash, say) must never append a line
+    # that is already on disk, so the durable tail raises the marker first.
+    last_exported = max(
+        int(state.get("last_event_exported", 0)),
+        _log_last_sequence(directory / "events.jsonl"),
+    )
     new_events = [event for event in state.get("events", []) if int(event["sequence"]) > last_exported]
     if new_events:
-        with (directory / "events.jsonl").open("a", encoding="utf-8") as stream:
+        events_path = directory / "events.jsonl"
+        with events_path.open("a", encoding="utf-8") as stream:
             for event in new_events:
                 stream.write(json.dumps(event, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _private_board_mode(events_path)
         state["last_event_exported"] = new_events[-1]["sequence"]
     _extract_cold_state(root, state)
     hot = state.get("events", [])[-HOT_EVENT_WINDOW:]
@@ -592,11 +778,12 @@ def locked_state(
 ) -> Iterator[dict[str, Any]]:
     """Lock, load, mutate, and atomically persist board state."""
     directory = board_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_board_directory(directory)
     lock_path = directory / ".lock"
     memory_state: dict[str, Any] | None = None
     memory_events: list[dict[str, Any]] = []
     with lock_path.open("a+", encoding="utf-8") as lock:
+        _private_board_mode(lock_path)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         path = _state_path(root)
         try:
@@ -631,12 +818,7 @@ def locked_state(
                     ),
                 })
                 _persist_visible_board(root, state)
-                temp = path.with_suffix(".tmp")
-                temp.write_text(
-                    json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n",
-                    encoding="utf-8",
-                )
-                os.replace(temp, path)
+                _write_state_file(path, state)
                 raise ProjectPausedError(
                     "project is paused; resume it before writing to the board"
                 )
@@ -666,9 +848,7 @@ def locked_state(
                     disk_matches = False
             if not disk_matches:
                 _persist_visible_board(root, state)
-                temp = path.with_suffix(".tmp")
-                temp.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-                os.replace(temp, path)
+                _write_state_file(path, state)
             memory_state = state
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
@@ -684,9 +864,10 @@ def locked_state(
 def _read_state(root: Path) -> dict[str, Any]:
     """Read a consistent hot snapshot without taking the writer lock."""
     directory = board_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_board_directory(directory)
     lock_path = directory / ".lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
+        _private_board_mode(lock_path)
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         try:
             path = _state_path(root)

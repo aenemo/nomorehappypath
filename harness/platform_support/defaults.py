@@ -782,7 +782,11 @@ class _FolderChooser:
         # the macOS-only refusal has to live here. Routing it through the
         # selector alone would have turned a named refusal into a
         # FileNotFoundError from a missing /usr/bin/osascript.
-        if os.uname().sysname != "Darwin":
+        #
+        # `hasattr` first, because `os.uname` does not exist on Windows: the
+        # unguarded call raised AttributeError from a module whose job was to
+        # refuse by name, so the one useful sentence never reached the owner.
+        if not hasattr(os, "uname") or os.uname().sysname != "Darwin":
             raise UnsupportedPlatformOperation("native folder selection")
         script = f'POSIX path of (choose folder with prompt "{prompt}")'
         try:

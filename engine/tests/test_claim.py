@@ -4,6 +4,7 @@
 
 Run via: bash engine/scripts/run_tests.sh
 """
+
 import io
 import os
 import sys
@@ -52,8 +53,10 @@ class ClaimTests(unittest.TestCase):
         rev_diff = reg.register("Codex (OpenAI)", "reviewer")
         item = claim.post("T1", "reviewer", forbid_vendor="Claude (Anthropic)")
         with self.assertRaises(claim.ClaimError):
-            claim.claim(item["item_id"], rev_same["signature"])   # same vendor forbidden
-        claimed = claim.claim(item["item_id"], rev_diff["signature"])  # different vendor OK
+            claim.claim(item["item_id"], rev_same["signature"])  # same vendor forbidden
+        claimed = claim.claim(
+            item["item_id"], rev_diff["signature"]
+        )  # different vendor OK
         self.assertEqual(claimed["claimed_by"], rev_diff["signature"])
         self.assertNotEqual(impl["vendor"], rev_diff["vendor"])
 
@@ -66,28 +69,56 @@ class ClaimTests(unittest.TestCase):
         a = reg.register("VendorX", "worker")
         item = claim.post("T1", "worker")
         claim.claim(item["item_id"], a["signature"])
-        done = claim.complete(item["item_id"])
+        done = claim.complete(item["item_id"], a["signature"])
         self.assertEqual(done["status"], "done")
         # a fresh item: claim, release back to open, re-claim
         item2 = claim.post("T2", "worker")
         claim.claim(item2["item_id"], a["signature"])
-        rel = claim.release(item2["item_id"])
+        rel = claim.release(item2["item_id"], a["signature"])
         self.assertEqual(rel["status"], "open")
         self.assertIsNone(rel["claimed_by"])
         self.assertFalse(claim._lock_path(item2["item_id"]).exists())
         reclaim = claim.claim(item2["item_id"], a["signature"])
         self.assertEqual(reclaim["status"], "claimed")
 
+    def test_only_the_holder_may_complete_or_release(
+        self,
+    ):  # P7, the invariant AC5 never checked
+        holder = reg.register("VendorX", "worker")
+        other = reg.register("VendorY", "worker")
+        item = claim.post("T1", "worker")
+        claim.claim(item["item_id"], holder["signature"])
+        with self.assertRaises(claim.ClaimError):
+            claim.complete(item["item_id"], other["signature"])
+        with self.assertRaises(claim.ClaimError):
+            claim.complete(item["item_id"], "")
+        with self.assertRaises(claim.ClaimError):
+            claim.release(item["item_id"], other["signature"])
+        # the holder still can, and the refusals changed nothing
+        self.assertEqual(
+            claim.complete(item["item_id"], holder["signature"])["status"], "done"
+        )
+
     def test_cli_smoke(self):  # AC6
         a = reg.register("VendorX", "implementer")
         buf = io.StringIO()
         with redirect_stdout(buf):
-            self.assertEqual(claim.main(["post", "--task", "T9", "--role", "implementer"]), 0)
+            self.assertEqual(
+                claim.main(["post", "--task", "T9", "--role", "implementer"]), 0
+            )
         item_id = buf.getvalue().strip()
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(claim.main(["claim", "--item", item_id, "--signature", a["signature"]]), 0)
+            self.assertEqual(
+                claim.main(["claim", "--item", item_id, "--signature", a["signature"]]),
+                0,
+            )
             self.assertEqual(claim.main(["list"]), 0)
-            self.assertEqual(claim.main(["complete", "--item", item_id]), 0)
+            self.assertEqual(
+                claim.main(
+                    ["complete", "--item", item_id, "--signature", a["signature"]]
+                ),
+                0,
+            )
 
 
 if __name__ == "__main__":

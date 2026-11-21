@@ -36,6 +36,9 @@ WRITE_OPERATIONS = {
 }
 ZERO_OID = "0" * 40
 SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
+# A wedged git process holds the board's write lock (and the broker's project
+# lock) forever, so no single trusted Git command may run unbounded.
+DEFAULT_GIT_TIMEOUT_SECONDS = 300
 
 
 class BrokerError(ValueError):
@@ -80,6 +83,20 @@ def _now() -> str:
 def _safe(value: str) -> str:
     """Produce a filesystem/ref-safe slug for value by replacing unsafe characters with '-'."""
     return SAFE_COMPONENT.sub("-", str(value)).strip("-.") or "task"
+
+
+def git_timeout_seconds() -> int:
+    """Seconds one trusted git subprocess may run (default 300; HARNESS_GIT_TIMEOUT).
+
+    An absent, non-numeric, or non-positive value falls back to the default: a zero
+    or endless wait is the unbounded hang this bound exists to remove. Return: the
+    positive whole number of seconds to wait.
+    """
+    try:
+        value = int(os.environ.get("HARNESS_GIT_TIMEOUT", "").strip() or DEFAULT_GIT_TIMEOUT_SECONDS)
+    except ValueError:
+        return DEFAULT_GIT_TIMEOUT_SECONDS
+    return value if value >= 1 else DEFAULT_GIT_TIMEOUT_SECONDS
 
 
 def porcelain_entries(output: str) -> list[tuple[str, list[str]]]:
@@ -458,8 +475,10 @@ class GitBroker:
         Builds a fixed, hardened option prefix, confines the process to readable/writable
         paths (plus any Git metadata directories discovered under cwd), optionally allows
         sandbox_network or allow_shell, and optionally redirects the index via index_file.
-        input is passed through as the subprocess stdin. The result is the completed
-        subprocess.CompletedProcess.
+        input is passed through as the subprocess stdin. Every command is bounded by
+        git_timeout_seconds() so one wedged process cannot hold the board's write lock
+        forever; a timeout raises BrokerError naming the subcommand. The result is the
+        completed subprocess.CompletedProcess.
         """
         candidates = platform_support.discovery().trusted_git_candidates()
         git = next((path for path in candidates if path.is_file()), candidates[-1])
@@ -533,10 +552,21 @@ class GitBroker:
                 raise BrokerError("temporary Git index is outside broker storage")
             environment["GIT_INDEX_FILE"] = str(resolved_index)
         text_mode = not isinstance(input, bytes)
-        return subprocess.run(
-            command, cwd=cwd, env=environment, input=input,
-            capture_output=True, text=text_mode, check=False,
-        )
+        timeout = git_timeout_seconds()
+        try:
+            return subprocess.run(
+                command, cwd=cwd, env=environment, input=input,
+                capture_output=True, text=text_mode, check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            # Not a hold and not a retry: the caller must see that Git did not
+            # finish, so the board records a failure instead of queueing every
+            # later write behind a process that may never return.
+            killed = " ".join(str(item) for item in list(arguments)[:2]) or "command"
+            raise BrokerError(
+                f"git {killed} was killed after {timeout} seconds without finishing"
+            ) from error
 
     def materialize_readonly_candidate(
         self, repository: Path, commit: str, destination: Path,
@@ -737,50 +767,193 @@ class GitBroker:
             workspace = repository_workspaces / _safe(task)
             if subtask:
                 workspace = repository_workspaces / f"{_safe(task)}-subtasks" / _safe(subtask)
-            existing = self._run_git(["show-ref", "--verify", "--quiet", branch], cwd=repository, writable=[repository])
-            if existing.returncode == 0 or workspace.exists():
-                raise BrokerError("task branch or worktree already exists")
-            workspace.parent.mkdir(parents=True, exist_ok=True)
-            base = self._identity(repository, "HEAD")
-            self._refuse_tree_filter_attributes(repository, base.commit, "branch-create")
-            created = self._run_git(
-                ["worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(workspace), base.commit],
-                cwd=repository, writable=[repository, workspace.parent], readable=[repository],
-            )
-            if created.returncode != 0:
-                raise BrokerError("could not create isolated task worktree: " + (created.stderr.strip() or created.stdout.strip()))
-            # Preserve tracked pre-task candidate bytes without ever opening
-            # unrelated untracked files.  The owner repository remains
-            # untouched; the patch is materialized only in the isolated task
-            # worktree and must later cross stage+commit with explicit paths.
-            inherited_names = self._run_git(
-                accepted_bytes.name_only_arguments("HEAD"), cwd=repository,
+            existing = self._run_git(
+                ["show-ref", "--verify", "--quiet", branch], cwd=repository,
                 writable=[repository],
             )
-            inherited_paths = sorted(line for line in inherited_names.stdout.splitlines() if line)
-            if inherited_paths:
-                patch = self._run_git(
-                    accepted_bytes.binary_patch_arguments("HEAD", paths=inherited_paths), cwd=repository,
-                    writable=[repository],
+            branch_exists = existing.returncode == 0
+            base = self._identity(repository, "HEAD")
+            transaction_id = f"branch-create-{secrets.token_hex(8)}"
+            if branch_exists or workspace.exists():
+                # A failure after `worktree add` used to leave the branch and
+                # worktree on disk with nothing in board state, and every retry
+                # was then refused forever, so the task id could never be used
+                # again. Adopt only when branch, worktree and HEAD are provably
+                # one identity: that is this operation's own abandoned start,
+                # not a different start that merely reuses the same names.
+                if branch_exists and workspace.exists() and (
+                    self._identity(repository, branch)
+                    == base
+                    == self._identity(workspace)
+                ):
+                    inherited_paths = self._inherited_tracked_paths(repository)
+                    record = self._branch_record(
+                        task, subtask, repository, workspace, branch, base,
+                        inherited_paths, adopted=True,
+                    )
+                    self._journal(
+                        transaction_id, "branch-create", "adopted",
+                        branch=branch, workspace=record["workspace"],
+                        commit=base.commit, tree=base.tree,
+                    )
+                    # branch_create's own transactions never reach recover();
+                    # the done row is what tells recovery this create is settled
+                    # instead of opening a hold for a journal with no intent.
+                    self._journal(
+                        transaction_id, "branch-create", "done", status="adopted",
+                        branch=branch, commit=base.commit, tree=base.tree,
+                    )
+                    return record
+                if (
+                    branch_exists and not workspace.exists()
+                    and self._identity(repository, branch) == base
+                ):
+                    # The branch is exactly the one this operation would create
+                    # and only its worktree is missing, so recreate the worktree
+                    # from that branch and continue down the normal path. The
+                    # tree filter refusal ran before the branch existed, so it
+                    # is not repeated for a branch already created.
+                    workspace.parent.mkdir(parents=True, exist_ok=True)
+                    created = self._run_git(
+                        ["worktree", "add", str(workspace), branch.removeprefix("refs/heads/")],
+                        cwd=repository, writable=[repository, workspace.parent],
+                        readable=[repository],
+                    )
+                    if created.returncode != 0:
+                        raise BrokerError("could not create isolated task worktree: " + (created.stderr.strip() or created.stdout.strip()))
+                else:
+                    # A branch or worktree that is not provably this operation's
+                    # own start is a real conflict, not a retry.
+                    raise BrokerError("task branch or worktree already exists")
+            else:
+                workspace.parent.mkdir(parents=True, exist_ok=True)
+                self._refuse_tree_filter_attributes(repository, base.commit, "branch-create")
+                created = self._run_git(
+                    ["worktree", "add", "-b", branch.removeprefix("refs/heads/"), str(workspace), base.commit],
+                    cwd=repository, writable=[repository, workspace.parent], readable=[repository],
                 )
-                if patch.returncode != 0:
-                    raise BrokerError("could not capture inherited tracked candidate changes: " + (patch.stderr.strip() or patch.stdout.strip()))
-                applied = self._run_git(
-                    ["apply", "--whitespace=nowarn", "-"], cwd=workspace,
-                    writable=[workspace, repository], input=patch.stdout.encode("utf-8"),
-                )
-                if applied.returncode != 0:
-                    detail = applied.stderr.decode("utf-8", errors="replace") if isinstance(applied.stderr, bytes) else applied.stderr
-                    raise BrokerError("could not materialize inherited tracked candidate changes: " + detail.strip())
-            resolved = self._identity(workspace)
-            if resolved != base:
-                raise RecoveryHoldError("created worktree does not match its board-derived base")
-            return {
-                "task": task, "subtask": subtask, "repository": str(repository),
-                "workspace": str(workspace.resolve()), "branch": branch,
-                "base_commit": base.commit, "base_tree": base.tree,
-                "inherited_tracked_paths": inherited_paths,
-            }
+                if created.returncode != 0:
+                    raise BrokerError("could not create isolated task worktree: " + (created.stderr.strip() or created.stdout.strip()))
+            try:
+                # Preserve tracked pre-task candidate bytes without ever opening
+                # unrelated untracked files.  The owner repository remains
+                # untouched; the patch is materialized only in the isolated task
+                # worktree and must later cross stage+commit with explicit paths.
+                inherited_paths = self._inherited_tracked_paths(repository)
+                if inherited_paths:
+                    patch = self._run_git(
+                        accepted_bytes.binary_patch_arguments("HEAD", paths=inherited_paths), cwd=repository,
+                        writable=[repository],
+                    )
+                    if patch.returncode != 0:
+                        raise BrokerError("could not capture inherited tracked candidate changes: " + (patch.stderr.strip() or patch.stdout.strip()))
+                    applied = self._run_git(
+                        ["apply", "--whitespace=nowarn", "-"], cwd=workspace,
+                        writable=[workspace, repository], input=patch.stdout.encode("utf-8"),
+                    )
+                    if applied.returncode != 0:
+                        detail = applied.stderr.decode("utf-8", errors="replace") if isinstance(applied.stderr, bytes) else applied.stderr
+                        raise BrokerError("could not materialize inherited tracked candidate changes: " + detail.strip())
+                resolved = self._identity(workspace)
+                if resolved != base:
+                    raise RecoveryHoldError("created worktree does not match its board-derived base")
+            except BrokerError:
+                # RecoveryHoldError is a BrokerError, so one handler covers both,
+                # and no other exception in this block is expected. No agent has
+                # written to this worktree yet, so the branch and worktree hold
+                # nothing worth keeping; discarding them keeps the task retryable.
+                # Cleanup never raises, so the original error is what the caller
+                # sees.
+                self._discard_created_scope(transaction_id, repository, workspace, branch)
+                raise
+            return self._branch_record(
+                task, subtask, repository, workspace, branch, base,
+                inherited_paths, adopted=False,
+            )
+
+    def _inherited_tracked_paths(self, repository: Path) -> list[str]:
+        """List the tracked paths whose bytes differ from HEAD in repository.
+
+        These are the pre-task candidate changes branch_create replays into the
+        isolated worktree. The fresh and the adopted path read them with the same
+        call, so both return the same record shape. Return: the sorted relative
+        paths, or raise BrokerError when the read itself fails.
+        """
+        inherited = self._run_git(
+            accepted_bytes.name_only_arguments("HEAD"), cwd=repository,
+            writable=[repository],
+        )
+        if inherited.returncode != 0:
+            raise BrokerError("could not inspect inherited tracked candidate changes: " + (inherited.stderr.strip() or inherited.stdout.strip()))
+        return sorted(line for line in inherited.stdout.splitlines() if line)
+
+    @staticmethod
+    def _branch_record(
+        task: str, subtask: str, repository: Path, workspace: Path,
+        branch: str, base: GitIdentity, inherited_paths: Sequence[str],
+        *, adopted: bool,
+    ) -> dict[str, Any]:
+        """Return the branch_create result for one task (or subtask) scope.
+
+        The retry path builds the record from the branch and worktree already on
+        disk, so callers see one shape whether the worktree was just created or
+        adopted. Return: the record dict, with adopted marking which path ran.
+        """
+        return {
+            "task": task, "subtask": subtask, "repository": str(repository),
+            "workspace": str(workspace.resolve()), "branch": branch,
+            "base_commit": base.commit, "base_tree": base.tree,
+            "inherited_tracked_paths": list(inherited_paths),
+            "adopted": adopted,
+        }
+
+    def _discard_created_scope(
+        self, transaction_id: str, repository: Path, workspace: Path, branch: str,
+    ) -> None:
+        """Best-effort remove the worktree and branch branch_create just created.
+
+        Called only from the post-create failure path, before any agent can write,
+        so the artifacts hold nothing worth keeping and leaving them would make the
+        task id permanently unusable. Every failure here is journalled, never
+        raised, because the caller must see its original error. Return: none.
+        """
+        removed_worktree = False
+        removed_branch = False
+        detail = ""
+        try:
+            removal = self._run_git(
+                ["worktree", "remove", "--force", str(workspace)],
+                cwd=repository, writable=[repository, workspace.parent],
+                readable=[repository],
+            )
+            removed_worktree = removal.returncode == 0
+            if not removed_worktree:
+                detail = removal.stderr.strip() or removal.stdout.strip()
+        except (BrokerError, OSError) as failure:
+            detail = str(failure)
+        try:
+            deleted = self._run_git(
+                ["update-ref", "-d", branch], cwd=repository, writable=[repository],
+            )
+            removed_branch = deleted.returncode == 0
+            if not removed_branch and not detail:
+                detail = deleted.stderr.strip() or deleted.stdout.strip()
+        except (BrokerError, OSError) as failure:
+            detail = detail or str(failure)
+        try:
+            self._journal(
+                transaction_id, "branch-create", "cleanup", branch=branch,
+                workspace=str(workspace), removed_worktree=removed_worktree,
+                removed_branch=removed_branch, detail=detail,
+            )
+            # The cleanup is final, so the transaction is settled: without a
+            # done row recovery would open a hold for a journal with no intent.
+            self._journal(
+                transaction_id, "branch-create", "done", status="aborted",
+                branch=branch, workspace=str(workspace),
+            )
+        except OSError:
+            pass
 
     def stage_commit(
         self,
