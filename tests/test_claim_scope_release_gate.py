@@ -8,9 +8,9 @@ directives) fails that lexical test mechanically, blocking a fully verified
 release with no agent-executable repair, since the direction is owner-authored.
 The CTO directive already rules that term overlap is never evidence; the code
 now agrees: word gaps are ADVISORY input to the CTO's artifact-traced audit,
-and the enforceable mechanical facts are a recorded owner direction plus a
-present final integrated acceptance — whose delivery-mode audit is the executed
-claim-scope audit.
+and the enforceable mechanical fact is a present final integrated acceptance —
+whose delivery-mode audit is the executed claim-scope audit. A missing direction
+record is paperwork (owner_direction_recorded, advisory; owner 2026-11-20).
 
 Run:  PYTHONPATH=. python3 -m unittest tests.test_claim_scope_release_gate -v
 """
@@ -83,8 +83,9 @@ class ClaimScopeReleaseGateTests(unittest.TestCase):
         self.assertFalse(checks["claim_scope_audit_passed"],
                          "echoed vocabulary is never evidence; the executed final audit is")
 
-    # ---- S-CLAIM-003: no owner direction still refuses ----
-    def test_no_owner_direction_refuses(self):
+    # ---- S-CLAIM-003: no owner direction record is paperwork: noted, never a hold (owner 2026-11-20: only bugs stop a
+    # release; Codex plan check 2026-11-20 R1-1) ----
+    def test_no_owner_direction_is_noted_not_a_hold(self):
         session = control.create(self.root, "codex_delivery")
         dev = board.register(self.root, "development", board.AWAITING_OWNER_DIRECTION,
                              vendor="OpenAI", session_id=session["id"])
@@ -101,7 +102,9 @@ class ClaimScopeReleaseGateTests(unittest.TestCase):
         ledger.write_text(LEDGER)
         self._final_acceptance("TASK-NO-DIRECTION")
         checks = cto.release_check(self.root, "TASK-NO-DIRECTION", ledger, self.root)
-        self.assertFalse(checks["claim_scope_audit_passed"])
+        self.assertTrue(checks["claim_scope_audit_passed"], "the executed final acceptance is the audit's mechanical fact")
+        self.assertFalse(checks["owner_direction_recorded"])
+        self.assertIn("owner_direction_recorded", checks["advisory_failures"])
 
 
 if __name__ == "__main__":

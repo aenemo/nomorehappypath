@@ -79,11 +79,14 @@ class CompletionObjectiveGateTests(unittest.TestCase):
         event = board.complete(self.root, dev["id"], "delivered per confirmed translation")
         self.assertEqual(event["kind"], "development_complete")
 
-    # ---- S-COMP-002: translated objective without confirmation is refused ----
-    def test_translated_objective_without_confirmation_is_refused(self):
+    # ---- S-COMP-002: translated objective without confirmation is noted, not refused (owner 2026-11-20: only bugs stop a
+    # release; the reviewer already passed the work against the agreed requirements) ----
+    def test_translated_objective_without_confirmation_is_noted_not_refused(self):
         dev = self._run_task("TASK-DRIFT", DIRECTION, TRANSLATED, confirm=False)
-        with self.assertRaisesRegex(ValueError, "requirements confirmation"):
-            board.complete(self.root, dev["id"], "attempting unconfirmed translation")
+        event = board.complete(self.root, dev["id"], "attempting unconfirmed translation")
+        self.assertEqual(event["kind"], "development_complete")
+        self.assertTrue(any("requirements confirmation" in note for note in event.get("process_notes", [])), event)
+        self.assertIn("paperwork noted, not blocking", event["message"])
 
     # ---- S-COMP-003: verbatim objective still completes without confirmation ----
     def test_verbatim_objective_completes_without_confirmation(self):

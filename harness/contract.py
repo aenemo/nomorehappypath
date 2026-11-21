@@ -593,6 +593,21 @@ def contract_complete(root, task):
     return (not problems, problems, value)
 
 
+def scope_problems(root, task):
+    """The product part of the contract check (owner 2026-11-20: only it may hold a release): the agreed scope is unchanged and
+    every exclusion carries the owner's approval. No contract recorded: nothing to violate. A contract that cannot be read or
+    has the wrong shape cannot prove its scope, so it is a problem. Return: the list of problems."""
+    path = _task_path(root, task)
+    if not Path(path).exists():
+        return []
+    try:
+        value = _load(path)
+        problems = [] if not any(not e.get("approved_by") or not e.get("reason") for e in value.get("exclusions", [])) else ["exclusion lacks approval/reason"]
+        return problems + list(_immutable_problems(value))
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        return ["the Completion Contract could not be read, so its agreed scope cannot be checked"]
+
+
 # Owner (2026-10-23): "the owner never runs or verifies a test". A deliverable that is about the agents' own tests is their job, not a step.
 AGENT_TEST_DELIVERABLE = re.compile(
     r"\b(automated|unit|integration|regression|e2e|end-to-end)\b.*\btests?\b|\btests?\b.*\b(pass|passing|suite|coverage)\b|\btest suite\b|\bpytest\b|\bunittest\b|\blint", re.I)

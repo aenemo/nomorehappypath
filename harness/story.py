@@ -295,7 +295,7 @@ def gate(state: dict[str, Any], task: str, facts: dict[str, Any], *, runtime_com
     stopped = stopped if stopped is not None else stopped_tasks(state)
     if task in stopped and not released and "stopped" not in skip:
         return out("STOPPED — TASK KEPT", "You stopped the Delivery agent. The task is kept with all its work. Start a new Delivery agent to carry on, or use Cancel task to abandon it.", "repair", kind="stopped")
-    if agent and agent.get("task") == task and not confirmed:
+    if agent and agent.get("task") == task and not confirmed and not released:   # 2026-11-20: a missing record never outranks a release
         return out("AWAITING FINAL REQUIREMENTS", "Delivery is clarifying the request. No implementation or review may begin until you say go ahead and the final requirements are recorded.")
     if released:
         return out("READY FOR YOUR TEST", "The reviewed version is ready. Try it using the steps below, then choose Accepted or Not accepted.", "ready")
@@ -762,6 +762,9 @@ def build(state: dict[str, Any], contracts: dict[str, Any] | None, task: str, ru
     findings, decision = owner_findings_and_decision(state, task)
     if decision and status in ("READY FOR YOUR TEST", "OWNER ACCEPTED", "RELEASE CHECKS", "ACCEPT SAVED, NOT IN MAIN YET") and not problem:
         now_text = now_text.rstrip() + " " + decision
+    paperwork = paperwork_note(state, task)
+    if paperwork and status in ("READY FOR YOUR TEST", "FINAL RELEASE CHECKS", "ACCEPT SAVED, NOT IN MAIN YET") and not problem:
+        now_text = now_text.rstrip() + " " + paperwork
     result = {
         "task": task, "title": _title_case(task), "step": step, "of": TOTAL_STEPS, "step_title": step_title(step), "who": who,
         "now": now_text, "next": next_text, "needs_owner": needs_owner, "owner_action": action,
@@ -781,6 +784,19 @@ def build(state: dict[str, Any], contracts: dict[str, Any] | None, task: str, ru
             result["timeline"] = {"error": f"The step list could not be drawn ({type(error).__name__}).", "steps": []}
             result["proof"] = {"error": f"The proof could not be drawn ({type(error).__name__}).", "rows": []}
     return result
+
+
+def paperwork_note(state: dict[str, Any], task: str) -> str:
+    """One plain sentence naming the paperwork the release went ahead without, for the task's newest final review ("" when none).
+
+    Owner 2026-11-20: "a process issue does not stop releasing the app, only bugs do" — paperwork is a line on the Story, never a card."""
+    from harness import board   # local: board imports this module
+    request = board._newest_final_request(state, task)
+    commit = str((request or {}).get("reviewed_commit") or "")
+    notes = [e for e in state.get("events") or [] if isinstance(e, dict) and e.get("kind") == "release_process_notes"
+             and e.get("task") == task and str(e.get("commit") or "") == commit]
+    words = [str(word) for word in (notes[-1].get("words") or [])] if notes else []
+    return ("Paperwork still open, not holding the release: " + "; ".join(words) + ".") if words else ""
 
 
 def owner_findings_and_decision(state: dict[str, Any], task: str) -> tuple[list[dict[str, Any]], str]:

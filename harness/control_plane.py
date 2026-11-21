@@ -50,7 +50,10 @@ def _route_final_pass_completion(root: Path) -> list[dict[str, Any]]:
     current = datetime.now(timezone.utc)
     with board.locked_state(root) as state:
         for task, request in board.unreleased_final_passes(state):
-            developer = state.get("agents", {}).get(request.get("developer_id", ""), {})
+            if board.owner_review_waiver_for(state, request) is not None:
+                continue   # the owner's decision is the sign-off: the release goes ahead without the builder (owner 2026-11-20)
+            # 2026-11-20 (Lease): the review's own builder may be offline and replaced; nudge the one carrying the task now
+            developer = board.current_builder(state, task, request) or {}
             if not developer.get("active") or not developer.get("session_id"):
                 continue
             lifecycle = state.setdefault("release_lifecycle", {}).setdefault(task, {"phases": {}})

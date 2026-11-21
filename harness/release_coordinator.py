@@ -26,6 +26,7 @@ action re-verifies reality before acting.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -259,6 +260,27 @@ def _collect_declared_build(root: Path, state: dict[str, Any], task: str, reques
     return None
 
 
+def _recorded_advisory(checks_path: Path) -> list[str]:
+    """The advisory (process) failures a prepared release recorded, or [] when its checks file is unreadable."""
+    try:
+        value = json.loads(checks_path.read_text()).get("advisory_failures")
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _signoff_grace_over(passed_at: str) -> bool:
+    """True once board.RELEASE_SIGNOFF_GRACE_SECONDS have passed since the final review's verdict (no readable time: False,
+    today's behaviour)."""
+    try:
+        passed = datetime.fromisoformat(passed_at)
+    except (TypeError, ValueError):
+        return False
+    if passed.tzinfo is None:
+        passed = passed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - passed).total_seconds() >= board.RELEASE_SIGNOFF_GRACE_SECONDS
+
+
 def _coordinatable_tasks(state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Scan state for tasks that passed final acceptance, are not cancelled, and whose development is complete (either a development_complete event after the pass, or no developer agent still active on the task). Return the list of (task, request) pairs eligible for this coordination pass."""
     cancelled = state.get("cancelled_tasks") or {}
@@ -278,7 +300,9 @@ def _coordinatable_tasks(state: dict[str, Any]) -> list[tuple[str, dict[str, Any
             event.get("kind") == "development_complete" and event.get("task") == task
             and str(event.get("at") or "") >= passed_at
             for event in state.get("events", [])
-        ) or not developers_live
+        ) or not developers_live or board.owner_review_waiver_for(state, request) is not None or _signoff_grace_over(passed_at)
+        # Owner 2026-11-20: a builder's "complete" is paperwork. The owner's decision on this exact candidate is the sign-off at
+        # once; after a Reviewer PASS the release waits a short grace for the builder's own complete, then goes ahead anyway.
         if completed:
             found.append((task, request))
     return found
@@ -314,6 +338,7 @@ def _coordinate_locked(root: Path, crash_after: str = "", crash_before_journal: 
             prepared = next((row for row in reversed(matching) if row.get("step") == "prepared"), None)
             if prepared:
                 checks_path = Path(str(prepared.get("checks_path") or ""))
+                board.release_prepared_with_notes(root, task, commit, _recorded_advisory(checks_path))
                 routed = _route_prepared(
                     root, state, task, commit, checks_path, coordination_key,
                 )
@@ -359,7 +384,8 @@ def _coordinate_locked(root: Path, crash_after: str = "", crash_before_journal: 
                 required_checks = set(required_checks) | {
                     "deployed_runtime_verified", "deployed_chat_verified",
                 }
-            mechanical = {key: bool(checks.get(key)) for key in required_checks}
+            # Owner 2026-11-20: only product checks hold; process checks are noted (checks["advisory_failures"]).
+            mechanical = {key: bool(checks.get(key)) for key in set(required_checks) - board.PROCESS_RELEASE_CHECKS}
             failed = sorted(k for k, v in mechanical.items() if not v
                             and k != "claim_scope_audit_passed")
             checks_path = board.board_dir(root) / "evidence" / f"release-checks-{task}.json"
@@ -393,6 +419,7 @@ def _coordinate_locked(root: Path, crash_after: str = "", crash_before_journal: 
                             "coordination_key": coordination_key,
                             "checks_path": str(checks_path)})
             board.clear_control_plane_hold(root, task, "release_coordinator")
+            board.release_prepared_with_notes(root, task, commit, list(checks.get("advisory_failures") or []))
             routed = _route_prepared(
                 root, state, task, commit, checks_path, coordination_key,
             )
